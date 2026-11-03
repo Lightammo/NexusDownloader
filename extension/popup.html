@@ -12,7 +12,7 @@
       <span class="logo">N</span>
       <div class="brand-text">
         <h1>Nexus Downloader</h1>
-        <p>IDM 接管 · MVP</p>
+        <p>IDM 接管 · 一键下载 v0.2.2</p>
       </div>
     </div>
     <span id="statusDot" class="dot bad" title="原生宿主状态"></span>
@@ -41,6 +41,11 @@
       <i></i>
     </label>
     <label class="switch">
+      <span>点 Manual download 直接下载</span>
+      <input id="clickDownload" type="checkbox">
+      <i></i>
+    </label>
+    <label class="switch">
       <span>自动拦截 Nexus 下载</span>
       <input id="autoIntercept" type="checkbox">
       <i></i>
@@ -65,7 +70,10 @@
   <section class="events">
     <div class="events-head">
       <span class="section-title">最近记录</span>
-      <button id="clearBtn" class="link">清空</button>
+      <span class="events-actions">
+        <button id="diagBtn" class="link">复制诊断</button>
+        <button id="clearBtn" class="link">清空</button>
+      </span>
     </div>
     <ul id="eventList" class="event-list"></ul>
   </section>

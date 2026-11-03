@@ -276,6 +276,12 @@ button:active {
   justify-content: space-between;
 }
 
+.events-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .events-head .section-title {
   margin-bottom: 4px;
 }

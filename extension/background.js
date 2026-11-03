@@ -17,8 +17,11 @@ const DEDUPE_MS = 5000;
 const DEFAULTS = {
   enabled: true,
   autoIntercept: true,
-  devAllDownloads: false
+  devAllDownloads: false,
+  clickDownload: true
 };
+
+const GRAPHQL_URL = 'https://api-router.nexusmods.com/graphql';
 
 const recent = new Map();
 
@@ -66,6 +69,113 @@ async function callBridge(pathname, body) {
       ok: false,
       error: '本地桥接未启动或无法连接（运行 bridge\\start.ps1）：' + (err && err.message ? err.message : String(err))
     };
+  }
+}
+
+/**
+ * Read the file list for a mod from Nexus's public GraphQL router.
+ */
+async function fetchModFiles(gameId, modId) {
+  const gid = Number(gameId);
+  const mid = Number(modId);
+  if (!Number.isInteger(gid) || gid <= 0 || !Number.isInteger(mid) || mid <= 0) return [];
+
+  try {
+    const response = await fetch(GRAPHQL_URL, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        query: `query ModFiles ($gameId: ID!, $modId: ID!) {
+          modFiles (gameId: $gameId, modId: $modId) {
+            fileId
+            name
+            uri
+            category
+            primary
+            version
+            detectedFileExtension
+          }
+        }`,
+        variables: { gameId: String(gid), modId: String(mid) },
+        operationName: 'ModFiles'
+      })
+    });
+    if (!response.ok) return [];
+    const data = await response.json();
+    const files = data && data.data && data.data.modFiles;
+    return Array.isArray(files) ? files : [];
+  } catch (_) {
+    return [];
+  }
+}
+
+/**
+ * Nexus's GraphQL file object exposes the display name and detected extension,
+ * not the original archive filename. Display name + extension is the best
+ * fallback when the page payload has no fileName.
+ */
+function composeFileName(file) {
+  if (!file) return '';
+  const name = String(file.name || '').trim();
+  const extension = String(file.detectedFileExtension || '').replace(/^\.+/, '');
+  if (!name) return '';
+  if (!extension) return name;
+  if (name.toLowerCase().endsWith('.' + extension.toLowerCase())) return name;
+  return name + '.' + extension;
+}
+
+/**
+ * Resolve the primary file (id + guessed filename) for page-level "Manual
+ * download" buttons that do not expose a file_id in their href/DOM.
+ */
+async function resolvePrimaryFileInfo(domain, modId) {
+  const gameId = await resolveGameId(domain);
+  if (!gameId) return null;
+
+  const files = await fetchModFiles(gameId, modId);
+  if (files.length === 0) return null;
+
+  const primary =
+    files.find((file) => file && (Number(file.primary) === 1 || file.category === 'MAIN')) || files[0];
+  if (!primary || !primary.fileId) return null;
+
+  return { fileId: String(primary.fileId), fileName: composeFileName(primary) };
+}
+
+async function resolveFileName(domain, modId, fileId) {
+  const gameId = await resolveGameId(domain);
+  if (!gameId) return '';
+  const files = await fetchModFiles(gameId, modId);
+  const match = files.find((file) => String(file.fileId) === String(fileId));
+  return match ? composeFileName(match) : '';
+}
+
+/**
+ * Resolve a numeric Nexus game id for a domain slug. The page usually has it
+ * already; this is only a fallback used when GenerateDownloadUrl wants it.
+ */
+async function resolveGameId(domain) {
+  const clean = String(domain || '').trim();
+  if (!/^[a-z0-9-]+$/i.test(clean)) return '';
+
+  try {
+    const response = await fetch(GRAPHQL_URL, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        query: `query GameByDomain ($domainName: String!) {
+          game (domainName: $domainName) { id domainName }
+        }`,
+        variables: { domainName: clean },
+        operationName: 'GameByDomain'
+      })
+    });
+    if (!response.ok) return '';
+    const data = await response.json();
+    const id = data && data.data && data.data.game && data.data.game.id;
+    return id ? String(id) : '';
+  } catch (_) {
+    return '';
   }
 }
 
@@ -192,6 +302,62 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     case 'nd:ping':
       callBridge('/ping').then(sendResponse);
       return true;
+
+    case 'nd:resolveGameId':
+      resolveGameId(message.domain).then((gameId) => sendResponse({ ok: !!gameId, gameId }));
+      return true;
+
+    case 'nd:resolvePrimaryFileId':
+      resolvePrimaryFileInfo(message.gameDomain, message.modId).then((info) =>
+        sendResponse(info ? { ok: true, fileId: info.fileId, fileName: info.fileName } : { ok: false })
+      );
+      return true;
+
+    case 'nd:resolveFileName':
+      resolveFileName(message.gameDomain, message.modId, message.fileId).then((fileName) =>
+        sendResponse({ ok: !!fileName, fileName })
+      );
+      return true;
+
+    case 'nd:log':
+      addEvent({
+        ok: !!message.ok,
+        message: String(message.message || '页面事件'),
+        url: String(message.url || ''),
+        source: 'page-log'
+      }).then(() => sendResponse({ ok: true }));
+      return true;
+
+    case 'nd:clickDownload': {
+      const url = String(message.url || '');
+      const filename = String(message.filename || '');
+      const fileId = String(message.fileId || '');
+      const gameId = String(message.gameId || '');
+
+      callBridge('/download', {
+        url,
+        filename,
+        referrer: String(message.referrer || ''),
+        source: 'page-click'
+      })
+        .then(async (response) => {
+          const ok = !!(response && response.ok);
+          await addEvent({
+            ok,
+            url,
+            filename: (response && response.filename) || filename,
+            fileId,
+            gameId,
+            message: ok
+              ? '已交给 IDM（页面一键下载）'
+              : '发送失败: ' + ((response && response.error) || '未知错误'),
+            source: 'page-click'
+          });
+          sendResponse(response);
+        })
+        .catch((err) => sendResponse({ ok: false, error: err.message }));
+      return true;
+    }
 
     case 'nd:manual':
       callBridge('/download', {

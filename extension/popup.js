@@ -76,6 +76,7 @@ async function refreshStatus() {
   if (settings && settings.ok) {
     const s = settings.settings;
     $('enabled').checked = !!s.enabled;
+    $('clickDownload').checked = s.clickDownload !== false;
     $('autoIntercept').checked = !!s.autoIntercept;
     $('devAllDownloads').checked = !!s.devAllDownloads;
   }
@@ -142,8 +143,44 @@ async function manualSend() {
   if (events && events.ok) renderEvents(events.events);
 }
 
+async function copyDiagnostic() {
+  const button = $('diagBtn');
+  const data = await chrome.storage.local.get({ lastDiagnostic: null });
+  if (!data.lastDiagnostic) {
+    button.textContent = '暂无诊断';
+    setTimeout(() => {
+      button.textContent = '复制诊断';
+    }, 1500);
+    return;
+  }
+
+  const text = JSON.stringify(data.lastDiagnostic, null, 2);
+  let copied = false;
+  try {
+    await navigator.clipboard.writeText(text);
+    copied = true;
+  } catch (_) {
+    try {
+      const area = document.createElement('textarea');
+      area.value = text;
+      document.body.appendChild(area);
+      area.select();
+      copied = document.execCommand('copy');
+      area.remove();
+    } catch (_) {
+      copied = false;
+    }
+  }
+
+  button.textContent = copied ? '已复制' : '复制失败';
+  setTimeout(() => {
+    button.textContent = '复制诊断';
+  }, 1800);
+}
+
 function bind() {
   $('enabled').addEventListener('change', (e) => saveToggle({ enabled: e.target.checked }));
+  $('clickDownload').addEventListener('change', (e) => saveToggle({ clickDownload: e.target.checked }));
   $('autoIntercept').addEventListener('change', (e) => saveToggle({ autoIntercept: e.target.checked }));
   $('devAllDownloads').addEventListener('change', (e) => saveToggle({ devAllDownloads: e.target.checked }));
 
@@ -156,6 +193,7 @@ function bind() {
   });
 
   $('refreshBtn').addEventListener('click', refreshStatus);
+  $('diagBtn').addEventListener('click', copyDiagnostic);
 
   $('openDirBtn').addEventListener('click', async () => {
     const res = await send({ type: 'nd:openFolder' });

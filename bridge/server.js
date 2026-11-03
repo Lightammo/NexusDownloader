@@ -14,7 +14,7 @@ const fs = require('fs');
 const path = require('path');
 const { spawn } = require('child_process');
 
-const VERSION = '0.1.0';
+const VERSION = '0.2.2';
 const ROOT = __dirname;
 const CONFIG_PATH = path.join(ROOT, '..', 'native-host', 'config.json');
 const LOG_FILE = path.join(ROOT, 'bridge.log');
@@ -84,9 +84,12 @@ function sanitizeFilename(name) {
 
 function filenameFromUrl(parsed) {
   try {
-    return decodeURIComponent(path.posix.basename(parsed.pathname || '')) || 'nexus-download.bin';
+    const base = decodeURIComponent(path.posix.basename(parsed.pathname || ''));
+    // Many Nexus CDN links end in a UUID (no extension); in that case let IDM
+    // use the server's Content-Disposition instead of forcing a bogus name.
+    return /\.[a-z0-9]{1,10}$/i.test(base) ? base : '';
   } catch (_) {
-    return 'nexus-download.bin';
+    return '';
   }
 }
 
@@ -150,13 +153,14 @@ function download(input) {
     throw new Error('host is not allowed: ' + parsed.hostname);
   }
 
-  const filename = sanitizeFilename(input.filename || filenameFromUrl(parsed));
+  const requestedName = String(input.filename || '').trim();
+  const filename = requestedName ? sanitizeFilename(requestedName) : filenameFromUrl(parsed);
   const dir = path.resolve(config.downloadDir);
   fs.mkdirSync(dir, { recursive: true });
 
   if (config.dryRun) {
-    log({ event: 'dry-run', id, url: parsed.toString(), filename, dir });
-    return { ok: true, id, dryRun: true, filename, dir };
+    log({ event: 'dry-run', id, url: parsed.toString(), filename: filename || null, dir });
+    return { ok: true, id, dryRun: true, filename: filename || null, dir };
   }
   if (!fs.existsSync(config.idmPath)) {
     throw new Error('IDM executable not found: ' + config.idmPath);
@@ -164,7 +168,8 @@ function download(input) {
 
   const args = [];
   if (config.silent) args.push('/n');
-  args.push('/d', parsed.toString(), '/p', dir, '/f', filename);
+  args.push('/d', parsed.toString(), '/p', dir);
+  if (filename) args.push('/f', filename);
 
   const child = spawn(config.idmPath, args, {
     detached: true,
