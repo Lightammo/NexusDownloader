@@ -2,6 +2,8 @@
 
 把 Nexus Mods 的下载请求交给 Internet Download Manager（IDM）的小工具。
 
+> 本项目由 DeepSeek Harness 生成（MVP v1）。
+
 当前版本是一个**可运行的最小闭环**：
 
 ```
@@ -150,7 +152,7 @@ node tools\test-bridge.js ping
 ```json
 {
   "idmPath": "C:\\Program Files (x86)\\Internet Download Manager\\IDMan.exe",
-  "downloadDir": "I:\\Program Files (x86)\\Code\\NexusDownloader\\downloads",
+  "downloadDir": "C:\\Users\\YourName\\Downloads",
   "allowedHosts": ["nexusmods.com", "nexus-cdn.com"],
   "allowAnyHost": false,
   "silent": true,
@@ -212,3 +214,7 @@ node tools\test-host.js download "https://www.example.com/" example.html --exe
 - 桥接：`bridge/bridge.log`（JSON lines）
 - 原生宿主：`native-host/logs/host.log`
 - 扩展：弹窗里的“最近记录”（存在 `chrome.storage.local`，最多 20 条）
+
+## License
+
+本项目采用 MIT License，详见 [LICENSE](LICENSE)。
