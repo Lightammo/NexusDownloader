@@ -1,0 +1,375 @@
+:root {
+  color-scheme: dark;
+  --bg: #0f1116;
+  --panel: #171a21;
+  --panel-2: #12151b;
+  --line: #242936;
+  --text: #e9ebf0;
+  --muted: #8b91a0;
+  --orange: #e8871e;
+  --orange-soft: rgba(232, 135, 30, 0.14);
+  --green: #39b571;
+  --red: #e5484d;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  width: 380px;
+  margin: 0;
+  background:
+    radial-gradient(120% 80% at 100% 0%, rgba(232, 135, 30, 0.10), transparent 55%),
+    var(--bg);
+  color: var(--text);
+  font: 13px/1.45 "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+}
+
+.top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 16px 10px;
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.logo {
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+  display: grid;
+  place-items: center;
+  background: linear-gradient(145deg, #f0a34f, #d9760f);
+  color: #17120a;
+  font-weight: 800;
+  font-size: 19px;
+  box-shadow: 0 6px 16px rgba(232, 135, 30, 0.25);
+}
+
+.brand-text h1 {
+  margin: 0;
+  font-size: 15px;
+  letter-spacing: 0.2px;
+}
+
+.brand-text p {
+  margin: 2px 0 0;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--red);
+  box-shadow: 0 0 0 4px rgba(229, 72, 77, 0.12);
+}
+
+.dot.ok {
+  background: var(--green);
+  box-shadow: 0 0 0 4px rgba(57, 181, 113, 0.14);
+}
+
+.card {
+  margin: 0 16px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 10px 12px;
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 24px;
+}
+
+.row + .row {
+  border-top: 1px dashed rgba(255, 255, 255, 0.05);
+}
+
+.label {
+  color: var(--muted);
+  font-size: 12px;
+  flex: 0 0 auto;
+}
+
+.value {
+  font-size: 12px;
+  font-weight: 600;
+  text-align: right;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.value.ok { color: var(--green); }
+.value.bad { color: var(--red); }
+
+.value.path {
+  color: #c8ccd6;
+  font-weight: 500;
+  max-width: 235px;
+  direction: rtl;
+}
+
+.hint {
+  margin: 8px 0 0;
+  color: var(--orange);
+  font-size: 11.5px;
+}
+
+.hint:empty {
+  display: none;
+}
+
+.toggles {
+  margin: 12px 16px 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.switch {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 2px;
+  cursor: pointer;
+  user-select: none;
+  color: #d4d8e0;
+  font-size: 12.5px;
+}
+
+.switch input {
+  position: absolute;
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+
+.switch i {
+  position: relative;
+  flex: 0 0 36px;
+  width: 36px;
+  height: 20px;
+  border-radius: 999px;
+  background: #2c313d;
+  transition: background 150ms ease;
+}
+
+.switch i::after {
+  content: "";
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #aeb4c0;
+  transition: transform 150ms ease, background 150ms ease;
+}
+
+.switch input:checked + i {
+  background: rgba(232, 135, 30, 0.85);
+}
+
+.switch input:checked + i::after {
+  transform: translateX(16px);
+  background: #fff;
+}
+
+.manual {
+  margin: 12px 16px 0;
+}
+
+.section-title {
+  display: block;
+  color: var(--muted);
+  font-size: 11px;
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
+  margin-bottom: 6px;
+}
+
+.text {
+  width: 100%;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--text);
+  padding: 8px 10px;
+  font: 12px/1.3 "Segoe UI", "Microsoft YaHei", sans-serif;
+  outline: none;
+  margin-bottom: 8px;
+}
+
+.text:focus {
+  border-color: rgba(232, 135, 30, 0.65);
+  box-shadow: 0 0 0 3px rgba(232, 135, 30, 0.10);
+}
+
+.text::placeholder {
+  color: #596071;
+}
+
+.manual-row {
+  display: flex;
+  gap: 8px;
+}
+
+.manual-row .text {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+button {
+  border: 0;
+  border-radius: 8px;
+  font: 600 12px/1 "Segoe UI", "Microsoft YaHei", sans-serif;
+  cursor: pointer;
+  transition: filter 120ms ease, background 120ms ease;
+}
+
+button:active {
+  transform: translateY(1px);
+}
+
+.primary {
+  flex: 0 0 auto;
+  padding: 0 16px;
+  height: 33px;
+  color: #1a1206;
+  background: linear-gradient(180deg, #f0a34f, #e8871e);
+}
+
+.primary:hover {
+  filter: brightness(1.06);
+}
+
+.msg {
+  min-height: 16px;
+  margin: 8px 0 0;
+  font-size: 11.5px;
+  color: var(--muted);
+}
+
+.msg.ok { color: var(--green); }
+.msg.bad { color: var(--red); }
+
+.events {
+  margin: 12px 16px 0;
+}
+
+.events-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.events-head .section-title {
+  margin-bottom: 4px;
+}
+
+.link {
+  background: transparent;
+  color: var(--muted);
+  font-weight: 500;
+  padding: 2px 4px;
+}
+
+.link:hover {
+  color: var(--text);
+}
+
+.event-list {
+  list-style: none;
+  margin: 2px 0 0;
+  padding: 0;
+  max-height: 172px;
+  overflow-y: auto;
+}
+
+.event-list::-webkit-scrollbar {
+  width: 6px;
+}
+
+.event-list::-webkit-scrollbar-thumb {
+  background: #2c313d;
+  border-radius: 3px;
+}
+
+.event {
+  display: flex;
+  gap: 8px;
+  padding: 7px 2px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.045);
+}
+
+.event:last-child {
+  border-bottom: 0;
+}
+
+.event .time {
+  flex: 0 0 40px;
+  color: #6b7283;
+  font-size: 10.5px;
+  padding-top: 2px;
+  font-variant-numeric: tabular-nums;
+}
+
+.event .main {
+  min-width: 0;
+}
+
+.event .title {
+  font-size: 12px;
+  color: #dfe2e9;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.event .sub {
+  font-size: 11px;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.event.bad .sub { color: #f2777b; }
+.event.ok .sub { color: #6fcf9b; }
+
+.event.empty {
+  color: #596071;
+  font-size: 11.5px;
+  padding: 10px 2px;
+}
+
+.bottom {
+  display: flex;
+  gap: 8px;
+  padding: 14px 16px 16px;
+}
+
+.ghost {
+  flex: 1;
+  height: 32px;
+  background: #1c202a;
+  border: 1px solid var(--line);
+  color: #c9cdd6;
+}
+
+.ghost:hover {
+  background: #222734;
+}

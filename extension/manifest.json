@@ -1,0 +1,45 @@
+{
+  "manifest_version": 3,
+  "name": "Nexus Downloader (IDM Bridge)",
+  "version": "0.1.0",
+  "description": "把 Nexus Mods 的下载交给 Internet Download Manager。MVP：浏览器扩展 → 本地桥接 → IDM。",
+  "minimum_chrome_version": "109",
+  "permissions": [
+    "downloads",
+    "storage"
+  ],
+  "host_permissions": [
+    "https://*.nexusmods.com/*",
+    "https://*.nexus-cdn.com/*",
+    "http://127.0.0.1:38765/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "Nexus Downloader",
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://*.nexusmods.com/*"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ],
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAoLYpou/4MZ0zwjeeDP2v9HPXVY1jsZmpQK6bDQOTkbG//3NFMR8FwQFBsHE91IehxOO64KQL6cgyYBgBXi3n1mr5f0X3N9dT5OCMChv1+3zP/5mzSfIGEVZES7UaMhN6MVZMFhQw5EHAXIrBr5JHDNAAgmC6zRuf8CzfZe88VYLNYralIHpXuv46pcs1JFpw2445BSd0C7WkpuvQQLNdLgl5IG83ppEwqh9gs31MnjR5dSmIWfFIOHKiALuBJWilaNqTSc4QGBg0vdRD2yoox9EFOTxqFDCLr8MTuFS/EixOadoKoa0jHCuDuCCKwTQRNXzOUIYLg2fSunxSra9KoQIDAQAB"
+}

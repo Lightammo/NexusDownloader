@@ -1,0 +1,19 @@
+node_modules/
+tmp/
+docs/*.png
+
+downloads/*
+!downloads/.gitkeep
+
+native-host/logs/*
+!native-host/logs/.gitkeep
+
+bridge/*.log
+
+# generated / machine-specific files (install.ps1 recreates them)
+native-host/config.json
+native-host/config.example.json.bak
+native-host/node_path.txt
+native-host/com.nexusdownloader.host.json
+native-host/NexusHost.exe
+tools/idm-settings-backup.json

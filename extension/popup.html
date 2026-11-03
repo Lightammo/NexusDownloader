@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Nexus Downloader</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <header class="top">
+    <div class="brand">
+      <span class="logo">N</span>
+      <div class="brand-text">
+        <h1>Nexus Downloader</h1>
+        <p>IDM 接管 · MVP</p>
+      </div>
+    </div>
+    <span id="statusDot" class="dot bad" title="原生宿主状态"></span>
+  </header>
+
+  <section class="card status">
+    <div class="row">
+      <span class="label">本地桥接</span>
+      <b id="hostState" class="value">检测中…</b>
+    </div>
+    <div class="row">
+      <span class="label">IDM</span>
+      <b id="idmState" class="value">—</b>
+    </div>
+    <div class="row">
+      <span class="label">保存到</span>
+      <b id="dirState" class="value path" title="">—</b>
+    </div>
+    <p id="hostHint" class="hint"></p>
+  </section>
+
+  <section class="toggles">
+    <label class="switch">
+      <span>启用接管</span>
+      <input id="enabled" type="checkbox">
+      <i></i>
+    </label>
+    <label class="switch">
+      <span>自动拦截 Nexus 下载</span>
+      <input id="autoIntercept" type="checkbox">
+      <i></i>
+    </label>
+    <label class="switch">
+      <span>开发者模式：拦截所有下载</span>
+      <input id="devAllDownloads" type="checkbox">
+      <i></i>
+    </label>
+  </section>
+
+  <section class="manual">
+    <label class="section-title" for="manualUrl">手动发送下载链接</label>
+    <input id="manualUrl" class="text" type="url" spellcheck="false" placeholder="https://cf-files.nexusmods.com/cdn/...">
+    <div class="manual-row">
+      <input id="manualName" class="text" type="text" spellcheck="false" placeholder="文件名（可选）">
+      <button id="sendBtn" class="primary">发送</button>
+    </div>
+    <p id="manualMsg" class="msg"></p>
+  </section>
+
+  <section class="events">
+    <div class="events-head">
+      <span class="section-title">最近记录</span>
+      <button id="clearBtn" class="link">清空</button>
+    </div>
+    <ul id="eventList" class="event-list"></ul>
+  </section>
+
+  <footer class="bottom">
+    <button id="refreshBtn" class="ghost">刷新状态</button>
+    <button id="openDirBtn" class="ghost">打开下载目录</button>
+  </footer>
+
+  <script src="popup.js"></script>
+</body>
+</html>
