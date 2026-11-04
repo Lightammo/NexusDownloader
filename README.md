@@ -74,7 +74,19 @@ tools/
   make-icons.py            生成图标
 
 downloads/                 IDM 下载落盘目录
+
+docs/
+  DEVELOPMENT.md           开发文档：架构、接口、与 bypass 对比、排错
 ```
+
+## 开发文档
+
+维护、二次开发或排查 Nexus 页面变化，请看 [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)：
+
+- 完整数据流、代码地图、消息/桥接契约
+- Nexus 文件组件、`file_id` / `uid`、`GenerateDownloadUrl`、`/api/files` 的细节
+- 与 [nexusmods-bypass](https://github.com/thomasthanos/nexusmods-bypass) 的能力对比和差距
+- 测试矩阵、日志位置、发布检查清单
 
 ## 快速开始
 
