@@ -89,6 +89,8 @@ async function refreshStatus() {
     $('idmState').className = 'value ' + (ping.idmExists ? 'ok' : 'bad');
     $('dirState').textContent = ping.downloadDir || '—';
     $('dirState').title = ping.downloadDir || '';
+    $('collectionDirState').textContent = ping.collectionRoot || '需重启桥接';
+    $('collectionDirState').title = ping.collectionRoot || '当前桥接版本不支持合集目录，请重启 bridge\\start.ps1';
     $('hostHint').textContent = ping.idmExists
       ? ''
       : 'config.json 里的 idmPath 不存在：' + (ping.idmPath || '');
@@ -100,6 +102,8 @@ async function refreshStatus() {
     $('idmState').className = 'value';
     $('dirState').textContent = '—';
     $('dirState').title = '';
+    $('collectionDirState').textContent = '—';
+    $('collectionDirState').title = '';
     $('hostHint').textContent = '先启动本地桥接：powershell -File bridge\\start.ps1，然后重试。';
     if (ping && ping.error) $('hostHint').title = ping.error;
   }

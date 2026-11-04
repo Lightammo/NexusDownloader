@@ -1,0 +1,28 @@
+HKEY_CURRENT_USER\Software\DownloadManager\609
+    LocalFileName    REG_SZ    C:\Users\Leo\AppData\Roaming\IDM\DwnlData\Leo\files_nexus-cdn_com_609\files_nexus-cdn_com
+    LocalPath    REG_SZ    C:\Users\Leo\AppData\Roaming\IDM\DwnlData\Leo\files_nexus-cdn_com_609\
+    Host    REG_SZ    files.nexus-cdn.com
+    Path    REG_SZ    /3b/f2/51/
+    FileName    REG_SZ    3bf25125-617e-4e50-9d29-0cadc27f595d?md5=RYk0QmZ98OsaVh0OzMb6rQ&expires=1793744698&user_id=305713167&h=314931fb8cf28f893cb538d35bb4a6a6
+    Url0    REG_SZ    https://files.nexus-cdn.com/3b/f2/51/3bf25125-617e-4e50-9d29-0cadc27f595d?md5=RYk0QmZ98OsaVh0OzMb6rQ&expires=1793744698&user_id=305713167&h=314931fb8cf28f893cb538d35bb4a6a6
+    dateAdded    REG_SZ    Nov 04 02:24:57 2026
+    Status    REG_DWORD    0x2
+    FR_FNCD    REG_SZ    Fatalis Adaptive 0.7.4 8923 0.7.5 2026-11-02T07-19Z Fk7FlBpPh.zip
+
+HKEY_CURRENT_USER\Software\DownloadManager\609\ChList
+
+HKEY_CURRENT_USER\Software\DownloadManager\610
+    Host    REG_SZ    supporter-files.nexus-cdn.com
+    Path    REG_SZ    2531/1982/
+    FileName    REG_SZ    Stracker's Loader-1982-3-0-1-1700072090.zip?md5=a&expires=1
+    Url0    REG_SZ    https://supporter-files.nexus-cdn.com/2531/1982/Stracker%27s%20Loader-1982-3-0-1-1700072090.zip?md5=a&expires=1
+    dateAdded    REG_SZ    Nov 03 18:24:56 2026
+    Status    REG_DWORD    0x2
+    FR_FNCD    REG_SZ    Stracker's Loader-1982-3-0-1-1700072090.zip
+
+HKEY_CURRENT_USER\Software\DownloadManager\611
+    LocalFileName    REG_SZ    C:\Users\Leo\AppData\Roaming\IDM\DwnlData\Leo\581_581\581
+    Host    REG_SZ    www.example.com
+    FileName    REG_SZ
+    dateAdded    REG_SZ    Nov 03 23:39:58 2026
+    Status    REG_DWORD    0x0

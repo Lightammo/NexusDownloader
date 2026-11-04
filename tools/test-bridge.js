@@ -7,6 +7,8 @@
  * Usage:
  *   node tools/test-bridge.js ping
  *   node tools/test-bridge.js download "https://example.com/file.zip" file.zip
+ *   node tools/test-bridge.js check "Worldly Improvements [vmu2j4]" a.zip
+ *   node tools/test-bridge.js idmHistory
  *   node tools/test-bridge.js openFolder
  *
  * Set NEXUS_BRIDGE_ALLOW_ANY=1 when the bridge process is started to allow a
@@ -41,8 +43,18 @@ async function main() {
     result = await request('/download', { url, filename, source: 'cli-test' });
   } else if (command === 'openFolder') {
     result = await request('/openFolder', {});
+  } else if (command === 'check') {
+    const subdir = process.argv[3] || '';
+    const names = process.argv.slice(4);
+    if (!names.length) {
+      console.error('usage: node tools/test-bridge.js check "<subdir>" file1.zip [file2.zip ...]');
+      process.exit(2);
+    }
+    result = await request('/check', { subdir, names });
+  } else if (command === 'idmHistory') {
+    result = await request('/idmHistory', { force: true });
   } else {
-    console.error('usage: node tools/test-bridge.js <ping|download|openFolder> [...]');
+    console.error('usage: node tools/test-bridge.js <ping|download|check|idmHistory|openFolder> [...]');
     process.exit(2);
   }
 

@@ -2,7 +2,7 @@
 
 把 Nexus Mods 的下载请求交给 Internet Download Manager（IDM）的小工具。
 
-> 本项目由 DeepSeek Harness 生成（MVP v1；v0.2 增加“点 Manual download 直接下载”）。
+> 本项目由 DeepSeek Harness 生成（MVP v1；v0.2 增加“点 Manual download 直接下载”；v0.3 增加“合集批量下载”）。
 
 当前版本是一个**可运行的最小闭环**：
 
@@ -48,14 +48,19 @@ Nexus 真实下载需要你本机浏览器已登录 Nexus，扩展会截获最�
 
 ```
 extension/                 Chrome/Edge MV3 扩展
-  background.js            转发下载、解析 game_id、记录事件
+  background.js            转发下载、解析 game_id、记录事件、合集 GraphQL / 去重 / 台账
   content.js               点击拦截、页面内解析 CDN 直链、右下角 toast
+  collection.js            【v0.3】合集页面板：列表、多选、队列、节奏、限速、验证恢复
   lib/nexus-utils.js       纯函数：file_id / 文件 JSON / 下载响应解析
+  lib/collection-utils.js  【v0.3】纯函数：合集路径 / 归一化 / 命名 / 去重身份
+  lib/queue-pacing.js      【v0.3】纯函数：下发等待、退避、Retry-After、共享冷却
+  lib/file-link.js         【v0.3】按 fileId 换直链（一键下载与合集共用）
   popup.html/js/css        状态、开关、手动发送、最近记录
   manifest.json            固定扩展 ID（key）
 
 bridge/
   server.js                本地 HTTP 桥接（唯一需要常驻的进程）
+  idm-history.js           【v0.3】只读解析 IDM 注册表 + DwnlData 日志
   start.ps1                启动桥接（已在运行则直接返回）
   install-autostart.ps1    创建开机启动快捷方式并启动
 
@@ -142,6 +147,8 @@ node tools\test-bridge.js ping
 
 > 如果之前加载过旧版本，改完代码后点扩展卡片上的“重新加载”。
 > 重新加载扩展后，已经打开的 Nexus 页面不会自动注入新脚本，需要刷新一次页面。
+> v0.3 改了桥接接口（`/check`、`/idmHistory`、`subdir`），升级时记得**重启桥接**，
+> 否则合集面板会提示“桥接版本过旧”。
 > v0.2 的桥接在拿不到文件名时不再强传 `/f`；如果本机还跑着旧桥接进程，重启一次
 > （结束旧的 `node bridge/server.js`，再运行 `bridge\start.ps1`）才会生效。
 
@@ -208,6 +215,33 @@ Slow download / Fast download”这类按钮（Vortex、Mod manager、`nxm://` �
 node tools\test-nexus-utils.js
 ```
 
+## 合集批量下载（v0.3）
+
+打开任意合集页面（例如
+<https://www.nexusmods.com/games/monsterhunterworld/collections/vmu2j4>），
+右下角会出现面板，列出合集里全部 mod：mod 名、原始压缩包名、版本、大小、是否可选。
+
+- **选择**：单个勾选、全选 / 全不选 / 反选 / 仅缺；没勾的不会下载。
+- **下载**：`下载选中` 会**逐个**换链接 → 交给 IDM → 等文件出现在目标目录 → 再按节奏等几秒，然后才处理下一个。
+  不会把几百个链接一口气生成出来。
+- **目录**：`<collectionRoot>\<合集名> [<slug>]\<uri 文件名>`，例如
+  `downloads\Collections\Worldly Improvements [vmu2j4]\Clarity 1.7-3004-1-7-1608607481.rar`。
+- **去重**：磁盘已有文件 / 扩展下发过 / IDM 历史有记录，三者都算重复。默认**不勾选**重复项；
+  在面板设置里可以改成“每次询问”。
+- **绝不覆盖**：桥接的 `onExisting` 只有 `skip` 和 `rename` 两种语义，没有覆盖分支；
+  勾选重复项表示“再下一份”，会落成 `… (2).zip`，旧文件保持不动。
+- **免费账号节奏**：默认每次下发后额外等 5 秒，并按 `大小 / 3.2MB/s` 估算传输时间，单次最多等 180 秒；
+  实际还会先等前一个文件落盘。可以在面板设置里调慢（额外等待 0–600 秒）。
+- **限速 / 人机验证**：遇到 429 会全体进入冷却（`Retry-After` 优先，30 秒起、最多 10 分钟）；
+  遇到 Cloudflare 会停在那一条上，打开该 mod 的页面让你完成验证，通过后自动续跑，
+  不会跳过去假装成功。
+- **断点续跑**：进度写在 `chrome.storage.local`；刷新页面或第二天再打开，会提示“已恢复上次进度”，
+  已完成 / 已下发的项不会重下。下载期间请把这个标签页留着（可以在后台）。
+
+> 合集列表来自 Nexus 的公开 GraphQL v2（`api.nexusmods.com/v2/graphql`），不需要登录也不经过 Cloudflare；
+> 真正换直链仍然在页面内完成，用的是你当前登录态的 Cookie。
+
+
 ## 配置
 
 桥接和原生宿主共用 `native-host/config.json`（仓库里只提交 `config.example.json`，本机 `config.json` 被 `.gitignore` 忽略；`install.ps1` / 手动复制示例即可生成）：
@@ -216,6 +250,7 @@ node tools\test-nexus-utils.js
 {
   "idmPath": "C:\\Program Files (x86)\\Internet Download Manager\\IDMan.exe",
   "downloadDir": "C:\\Users\\YourName\\Downloads",
+  "collectionRoot": "C:\\Users\\YourName\\Downloads\\Collections",
   "allowedHosts": ["nexusmods.com", "nexus-cdn.com"],
   "allowAnyHost": false,
   "silent": true,
@@ -223,7 +258,8 @@ node tools\test-nexus-utils.js
 }
 ```
 
-- `downloadDir`：IDM 保存目录
+- `downloadDir`：单文件下载的保存目录
+- `collectionRoot`：合集根目录；不配时默认 `<downloadDir>\\Collections`。合集子目录由扩展按 `合集名 [slug]` 生成，桥接只接受 root 下的相对子目录
 - `allowedHosts`：允许交给 IDM 的域名（含子域名）
 - `allowAnyHost`：`true` 时允许任意 http(s) 域名（仅测试用）
 - `dryRun`：只记录命令，不真正启动 IDM
@@ -231,12 +267,24 @@ node tools\test-nexus-utils.js
 
 改完配置后重启桥接（结束 `node bridge/server.js`，再运行 `bridge/start.ps1`）。
 
+> **v0.3 升级注意**：合集接口（`/check`、`/idmHistory`、`subdir`）是桥接新增的。
+> 旧桥接（0.1.x/0.2.x）仍在运行时，面板会提示“桥接版本过旧”，需要结束旧进程再重新启动一次。
+
 ## 测试
 
 页面解析纯函数（不需要浏览器、不需要桥接）：
 
 ```powershell
 node tools\test-nexus-utils.js
+node tools\test-collection-utils.js   # 合集路径/命名/归一化/去重身份
+node tools\test-queue-pacing.js       # 下发节奏、退避、冷却
+node tools\test-idm-history.js        # IDM 注册表/日志解析
+```
+
+打印一个合集的 mod 列表（验证接口是否变化，不需要浏览器）：
+
+```powershell
+node tools\print-collection.js monsterhunterworld vmu2j4
 ```
 
 不开浏览器，直接测桥接：
@@ -274,6 +322,13 @@ node tools\test-host.js download "https://www.example.com/" example.html --exe
 8. **本地桥接无鉴权**：只监听 `127.0.0.1`，适合个人本机使用；不要暴露到局域网/公网。
 9. **扩展 ID 变更**：如果重新生成 `manifest.json` 的 `key`，需要同步更新原生宿主的
    `allowed_origins`（重新运行 `native-host/install.ps1`；桥接方式不受影响）。
+10. **合集下载慢是正常的**：免费账号 + 逐个换链接，每个文件大约 `大小/3.2MB/s + 5s`，
+    100 个中等 mod 大概 1 小时，上千个的合集要按天算。面板支持暂停和断点续跑，不要一次全选硬跑。
+11. **合集列表依赖 `api.nexusmods.com/v2/graphql`**：官方标注还是 WIP。字段变了会读不到列表，
+    用 `node tools\print-collection.js <game> <slug>` 可以快速确认是接口问题还是页面问题。
+12. **合集面板只出现在合集页**：`/games/<game>/collections/<slug>`；文件页仍是一键下载那套。
+13. **下载期间别关标签页**：队列在 content script 里，关掉就停；重新打开会恢复进度，
+    点“继续”接着跑。切到后台标签页会自动把节奏放慢到 3 倍，避免积压后突然连发。
 
 ## 卸载 / 还原
 
@@ -288,9 +343,11 @@ node tools\test-host.js download "https://www.example.com/" example.html --exe
 
 - 桥接：`bridge/bridge.log`（JSON lines）。只有真正发到桥接的请求才会写这里；
   “没有找到 file_id / 解析失败”发生在页面内，不会出现在桥接日志里。
+  合集相关事件：`skip-existing`（同名文件，拒绝覆盖）、`spawned` 里的 `subdir`。
 - 扩展弹窗：**最近记录**。解析失败也会记一条；点 **复制诊断** 可复制最近一次
   点击的 DOM 诊断（按钮 HTML、祖先节点属性、解析到的 file_id 来源）。诊断同时存在
   `chrome.storage.local.lastDiagnostic`。
+- 合集面板：点“日志”展开，记录每一轮换链接/下发/落盘/限速/验证；最近 200 条。
 - Nexus 页面 DevTools Console（F12）：失败时会打印
   `[NexusDownloader] 没有找到 file_id，点击诊断：` 及完整对象。
 - Service Worker 日志：`chrome://extensions` → Nexus Downloader → 点“Service Worker”

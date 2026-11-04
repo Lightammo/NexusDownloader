@@ -1,6 +1,6 @@
 # Nexus Downloader 开发文档
 
-> 适用版本：**v0.2.2**（extension / bridge 同版本）
+> 适用版本：**v0.3.0**（extension / bridge 同版本）
 > 最后更新：2026-11-04
 > 面向：维护者、二次开发、排查 Nexus 页面变化
 
@@ -8,19 +8,18 @@
 
 ## 0. 项目定位
 
-把 Nexus Mods 文件页的一次「Manual download」变成 IDM 里的一个下载任务：
+把 Nexus Mods 的下载变成 IDM 里的下载任务：
 
-- 浏览器里点 **Manual download**；
-- 扩展在页面内取到该文件的签名 CDN 直链；
-- 通过本机 `127.0.0.1:38765` 桥接交给 IDM；
-- 不打开下载页、不点 Slow download、不经过浏览器下载。
+- 文件页点 **Manual download**：扩展在页面内取到该文件的签名 CDN 直链，交给 IDM；
+- 合集页（v0.3）：面板列出合集里全部 mod，多选后**逐个**换链接、限速下发、按集合名建子目录、三源去重。
 
 非目标（当前版本明确不做）：
 
-- Collections 批量队列、断点续跑、限速；
 - Vortex / `nxm://` 交接；
 - Mod Organizer 2 的 `.meta` 文件；
-- 用官方 Nexus API 替代页面内解析。
+- 用官方 API 替代页面内解析（REST v1 换直链仅限 Premium，本机是免费账号）；
+- 自动解压 / 按 mod 建子目录；
+- 任何形式的 Cloudflare 绕过。
 
 ---
 
@@ -28,26 +27,33 @@
 
 ```
 Chrome/Edge (MV3)
-  content.js  ── 页面内拦截点击、读 file_id、取签名链接
-       │ chrome.runtime.sendMessage
-       ▼
-  background.js ── 事件记录、GraphQL 查询、转发桥接
-       │ fetch http://127.0.0.1:38765
-       ▼
-  bridge/server.js ── 校验 URL、拼 IDM 命令行
-       │ spawn IDMan.exe /n /d ... /p ... [/f ...]
-       ▼
-  downloads/
+  content.js  ── 文件页：点击拦截、读 file_id、取签名链接
+  collection.js ── 合集页：浮层面板 + 队列（逐个换链接、节奏、限速、验证恢复）
+        │ chrome.runtime.sendMessage
+        ▼
+  background.js ── 事件记录、GraphQL、去重检查、台账、转发桥接
+        │ fetch http://127.0.0.1:38765
+        ▼
+  bridge/server.js ── 校验 URL/子目录、同名跳过或另存、拼 IDM 命令行
+  bridge/idm-history.js ── 只读解析 IDM 注册表 + DwnlData 日志
+        │ spawn IDMan.exe /n /d ... /p ... [/f ...]
+        ▼
+  downloads/  或  collectionRoot/<合集名 [slug]>/
 ```
 
 组件职责：
 
 | 组件 | 职责 | 生命周期 |
 |---|---|---|
-| `extension/content.js` | 点击拦截、DOM/页面数据解析、`GenerateDownloadUrl`、页面回退 | 每个 Nexus 页面 |
+| `extension/content.js` | 文件页点击拦截、DOM/页面数据解析、页面回退 | 每个 Nexus 页面 |
+| `extension/collection.js` | 合集页面板、选择、队列、节奏、限速冷却、验证恢复、断点续跑 | 每个合集页面 |
 | `extension/lib/nexus-utils.js` | 纯函数：uid、JSON/HTML 解析、文件名、Generate body | 与 content 一起加载 |
-| `extension/background.js` | 消息路由、GraphQL、事件存储、桥接调用 | MV3 service worker，可休眠 |
+| `extension/lib/collection-utils.js` | 纯函数：合集路径、GraphQL 归一化、Windows 命名、去重身份 | content / SW / bridge 共用 |
+| `extension/lib/queue-pacing.js` | 纯函数：等待、退避、`Retry-After`、冷却 | content 加载 |
+| `extension/lib/file-link.js` | 按 fileId 换直链（一键与合集共用） | content 加载 |
+| `extension/background.js` | 消息路由、GraphQL、合集去重、台账、桥接调用 | MV3 service worker，可休眠 |
 | `bridge/server.js` | 常驻 Node 进程，校验并启动 IDM | 独立进程，开机启动可选 |
+| `bridge/idm-history.js` | 读 IDM 历史（注册表 / 日志 / URL 历史） | 被桥接按需调用，60s 缓存 |
 | `native-host/` | 实验性 Native Messaging 实现 | 不参与当前主链路 |
 
 ---
@@ -94,22 +100,32 @@ Chrome/Edge (MV3)
 | `extension/content.js` | `handleDownloadClick` | 点击入口、分类、阻止默认行为 |
 | | `fileIdFromNode` / `fileIdFromPath` / `fileIdFromRow` | 从属性、JSON、行链接取 file_id |
 | | `readPayload` / `payloadFromNode` | 读 `file`、`main-file`、`download-url`、modal |
-| | `resolveDownloadUrl` | 直链解析主流程 |
-| | `callGenerateDownloadUrl` | POST `GenerateDownloadUrl` |
-| | `fetchApiRoute` | 解析 `/api/files/<uid>/download` |
-| | `fetchFilePageDownloadUrl` | 抓手动下载页 |
+| | `resolveDownloadUrl` | 直链解析主流程（底层调用 `lib/file-link.js`） |
 | | `maybeAutoStart` | `nd_auto=1` 自动重试 |
 | | `show` / `describeClick` | toast 与诊断 |
+| `extension/lib/file-link.js` | `resolveByFileId` | 只按 fileId 换直链：Generate → ab 重试 → 文件页 → API 路由 → 旧 widget |
+| | `classify` / `retryAfterSeconds` | HTTP/挑战/限速/登录分类 |
+| `extension/lib/collection-utils.js` | `parseCollectionPath` | `/games/<game>/collections/<slug>[/revisions/<n>]` |
+| | `normalizeCollectionRevision` | GraphQL → 面板行（可用性、大小、uri、去重键） |
+| | `sanitizeSegment` / `sanitizeFilename` | 桥接与扩展共用的 Windows 命名规则 |
+| | `collectionFolderName` | `<合集名> [<slug>]` |
+| | `matchIdmRecord` / `extractCdnIdentity` | IDM 历史匹配（原始文件名 / UUID / `h`） |
+| `extension/lib/queue-pacing.js` | `computePauseMs` | 2s 下限、`大小/3.2MB/s + 5s`、180s 上限、隐藏标签页 ×3 |
+| | `retryDelayMs` / `nextCooldown` | 1.5s→30s 等量抖动；30s→600s 共享冷却 |
+| `extension/collection.js` | `loadCollection` / `runPreflight` | 拉列表、三源去重、恢复作业 |
+| | `startQueue` / `processItem` | 队列主循环、单条下发、落盘确认 |
+| | `handleChallenge` | 挑战：停在那条、开验证页、探针、自动续跑 |
 | `extension/lib/nexus-utils.js` | `normalizeFileId` | uid → file_id |
 | | `payloadFileId` / `selectPayloadForFile` | 从文件 JSON 取 id、按 file_id 选条目 |
 | | `parseDownloadUrlResponse` | JSON / HTML / `data-download-url` |
 | | `parseDownloadUrlFromPageHtml` | 整页 `download-url` / `file` JSON |
 | | `buildGenerateBody` | `fid` + 数字 `game_id` |
 | `extension/background.js` | `fetchModFiles` | GraphQL `modFiles(gameId, modId)` |
-| | `resolvePrimaryFileInfo` | 主文件 + 文件名 |
-| | `resolveFileName` | 按 fileId 反查文件名 |
+| | `fetchCollectionRevision` | GraphQL v2 合集 + 10 分钟缓存 |
+| | `collectionCheck` | 磁盘 + IDM 历史 + 台账三源去重 |
+| | `collectionSend` / `recordDispatch` | 下发并写台账 |
 | | `onMessage` | 扩展消息路由 |
-| `extension/popup.*` | | 开关、状态、最近记录、复制诊断 |
+| `extension/popup.*` | | 开关、状态（含合集根目录）、最近记录、复制诊断 |
 | `extension/manifest.json` | | MV3 权限、content script、固定扩展 ID |
 
 ### 3.2 bridge / tools / native-host
@@ -222,7 +238,68 @@ query ModFiles($gameId: ID!, $modId: ID!) {
 
 - `ab` cookie：页面自己会在倒计时里写；直接生成时没有倒计时，所以失败后补写一次再重试。
 - Cloudflare 人机验证无法由扩展代替；失败时提示用户刷新页面完成验证。
-- Nexus 对免费账号有下载间隔/频率限制；当前没有主动 pacing，按点击触发。
+- 免费账号有下载间隔/频率限制。v0.2 按点击触发、没有 pacing；v0.3 的合集队列**主动限速**（见 §4.8）。
+
+### 4.8 合集（Collections）
+
+列表来自公开 GraphQL v2，**不需要登录、不经过 Cloudflare**：
+
+```
+POST https://api.nexusmods.com/v2/graphql
+query CollectionRevision($slug, $domainName, $revision, $adult)
+  collection(slug, domainName) { id slug name game{domainName id} latestPublishedRevision{revisionNumber} }
+  collectionRevision(slug, domainName, revision, viewAdultContent: $adult) {
+    revisionNumber status adultContent modCount totalSize
+    modFiles { optional updatePolicy fileId
+      file { fileId modId name version size sizeInBytes uri category mod{name author status adultContent} } }
+  }
+```
+
+要点（都实测过）：
+
+- **必须传 `viewAdultContent: true`**：合集里只要有一个成人内容 mod，不传就整体返回
+  `ADULT_CONTENT_BLOCKED`（`qdurkx`、`9zfscf` 都这样）。
+- `revision` 可省略，省略时返回当前发布版；显式指定时用 `latestPublishedRevision.revisionNumber`。
+- `modFiles` 一次全量返回、无分页：2444 个 mod 的合集一次 2.7s / 830KB。
+- `file` 可能为 `null`（外部来源）；`file.category` 可能是 `REMOVED`；`mod.status` 非
+  `published`/`archived` 时视为不可下载。
+- `uri` 是 Nexus 原始压缩包名（`Clarity 1.7-3004-1-7-1608607481.rar`），**落盘名用它**。
+- `size` 单位是 KB，`sizeInBytes` 对归档文件可能为 `null`，展示要回退 `size * 1024`。
+- 站点自己的 `api-router.nexusmods.com/graphql` 是另一套（带 Cookie），当前不用；页面 HTML 抓取会被 Cloudflare 403，不可用。
+
+换直链仍然逐 fileId 走 §4.3 的页面内流程（`lib/file-link.js`），因为 REST v1
+`download_link.json` 对免费账号直接 403。
+
+合集队列策略（`collection.js` + `lib/queue-pacing.js`）：
+
+| 参数 | 默认 | 说明 |
+|---|---|---|
+| 两条之间硬下限 | 2000ms | 跳过/失败也等 |
+| 额外等待 | 5s（0–600） | 用户可改 |
+| 传输估算 | `sizeMB / 3.2MB/s` | 只用于等待 |
+| 单次等待上限 | 180s | |
+| 落盘等待 | `min(pause*3, 180s)` | 轮询 `/check`，等到文件出现再继续 |
+| 重试 | 3 次，1.5s→30s 等量抖动 | 单个文件 |
+| 限速冷却 | 30s→600s，最多 6 次，跨标签共享 | `Retry-After` 优先 |
+| 隐藏标签页 | 等待 ×3 | 防后台节流后连发 |
+| 小文件优先 | 开 | |
+| 批次确认 | >50 个文件 | |
+
+遇到挑战：队列停在该文件（不跳过、不推进），打开该 mod 的页面（不带 `file_id`）让用户过验证，
+同源 `HEAD` 探针每 5s 递增到 30s 检测恢复，通过后从同一条继续；30 分钟未恢复则停止。
+
+### 4.9 去重
+
+身份：`gameId:modId:fileId`（台账）、`uri` 文件名、CDN URL 里的 UUID / `h=` 参数
+（同一文件多次生成的链接 `h` 不变）。四层判定：
+
+1. **磁盘**：`<合集目录>/<sanitize(uri)>` 存在（桥接 `/check`）；
+2. **台账**：`chrome.storage.local.dispatchLedger` 里同一 key 且目录相同；
+3. **IDM 注册表**：`HKCU\Software\DownloadManager\<id>` 的 `Url0` / `FR_FNCD`；
+4. **IDM 日志**：`%APPDATA%\IDM\DwnlData\<user>\<slug>_<n>\*.log` 的 `Url` 与 `Content-Disposition`。
+
+默认策略 `skip`（重复项不勾选），可切 `ask`（弹框）。**永不覆盖**：桥接只接受
+`onExisting: skip | rename`，`rename` 落成 `name (2).ext`；没有删除/覆盖分支。
 
 ---
 
@@ -238,6 +315,13 @@ query ModFiles($gameId: ID!, $modId: ID!) {
 | `clickDownload` | `true` | 点 Manual download 直接下载 |
 | `autoIntercept` | `true` | 兜底拦截浏览器发起的 Nexus 下载 |
 | `devAllDownloads` | `false` | 开发用：拦截所有下载 |
+| `collectionPauseSeconds` | `5` | 合集：每次下发后的额外等待（0–600） |
+| `collectionAssumedSpeedMBps` | `3.2` | 合集：传输估算速度（0.1–1000） |
+| `collectionDuplicatePolicy` | `'skip'` | 合集：重复项 `skip` / `ask` |
+| `collectionUseIdmHistory` | `true` | 合集：把 IDM 历史算作重复 |
+| `collectionSmallestFirst` | `true` | 合集：小文件先下 |
+| `collectionOpenCheckPage` | `true` | 合集：遇到验证时自动打开 mod 页 |
+| `collectionFolderSuffix` | `true` | 合集：目录名带 `[slug]` |
 
 ### 5.2 消息
 
@@ -253,6 +337,12 @@ query ModFiles($gameId: ID!, $modId: ID!) {
 | `nd:openFolder` | popup → background | 打开下载目录 |
 | `nd:getSettings` / `nd:setSettings` | popup → background | 读写设置 |
 | `nd:getEvents` / `nd:clearEvents` | popup → background | 最近记录 |
+| `nd:collectionResolve` | collection → background | `{gameDomain, slug, revision?, force?}` → 归一化列表（GraphQL v2） |
+| `nd:collectionCheck` | collection → background | `{subdir, items, useIdmHistory}` → 每项去重结论 |
+| `nd:collectionSend` | collection → background | 下发一条到桥接，并写台账 |
+| `nd:collectionPoll` | collection → background | `{subdir, names}` → 磁盘落盘状态 |
+| `nd:collectionJobGet` / `nd:collectionJobSet` / `nd:collectionJobClear` | collection → background | 作业持久化（`chrome.storage.local.collectionJobs`） |
+| `nd:collectionOpenFolder` | collection/popup → background | 打开合集目录 |
 
 `nd:clickDownload` 的 payload：
 
@@ -285,7 +375,8 @@ query ModFiles($gameId: ID!, $modId: ID!) {
 | `storage` | 设置、事件、诊断 |
 | `clipboardWrite` | 复制诊断 |
 | `https://*.nexusmods.com/*` | 页面脚本、GraphQL 同源请求 |
-| `https://api-router.nexusmods.com/*` | 后台 GraphQL |
+| `https://api-router.nexusmods.com/*` | 后台 GraphQL（games / modFiles） |
+| `https://api.nexusmods.com/*` | 后台 GraphQL v2（合集列表） |
 | `https://*.nexus-cdn.com/*` | CDN 链接校验 |
 | `http://127.0.0.1:38765/*` | 本地桥接 |
 
@@ -307,9 +398,15 @@ query ModFiles($gameId: ID!, $modId: ID!) {
 
 | 方法 | 路径 | Body | 返回 |
 |---|---|---|---|
-| `GET` | `/ping` | — | `{ ok, bridge, idmPath, idmExists, downloadDir, … }` |
-| `POST` | `/download` | `{ url, filename?, referrer?, source? }` | `{ ok, id, filename, dir, command }` |
-| `POST` | `/openFolder` | `{}` | `{ ok, dir }` |
+| `GET` | `/ping` | — | `{ ok, bridge, idmPath, idmExists, downloadDir, collectionRoot, … }` |
+| `POST` | `/download` | `{ url, filename?, referrer?, source?, subdir?, onExisting?: 'skip'\|'rename' }` | `{ ok, id, filename, dir, skipped?:'disk', command }` |
+| `POST` | `/check` | `{ subdir?, names: [] }` | `{ ok, dir, exists, files: { name: { exists, size, mtimeMs } } }` |
+| `POST` | `/idmHistory` | `{ force? }` | `{ ok, records: [], counts, error }` |
+| `POST` | `/openFolder` | `{ subdir? }` | `{ ok, dir }` |
+
+`subdir` 只接受 `collectionRoot` 下的相对路径（1–3 段、无盘符/UNC/`..`，且每段必须等于
+`sanitizeSegment()` 的结果），最终 `path.resolve` 必须仍在 root 之下。
+`onExisting` 默认 `skip`；`rename` 才会落成 `name (2).ext`。**桥接没有覆盖分支。**
 
 CORS：`*`；支持 `Access-Control-Allow-Private-Network: true`；OPTIONS 返回 204。
 
@@ -321,6 +418,7 @@ CORS：`*`；支持 `Access-Control-Allow-Private-Network: true`；OPTIONS 返�
 {
   "idmPath": "C:\\Program Files (x86)\\Internet Download Manager\\IDMan.exe",
   "downloadDir": "…\\downloads",
+  "collectionRoot": "…\\downloads\\Collections",
   "allowedHosts": ["nexusmods.com", "nexus-cdn.com"],
   "allowAnyHost": false,
   "silent": true,
@@ -329,8 +427,10 @@ CORS：`*`；支持 `Access-Control-Allow-Private-Network: true`；OPTIONS 返�
 ```
 
 - `allowedHosts` 匹配域名及其子域名。
+- `collectionRoot` 缺省为 `<downloadDir>/Collections`。
 - `NEXUS_BRIDGE_ALLOW_ANY=1` 可临时放开任意域名。
 - `NEXUS_BRIDGE_PORT` 可改端口（扩展写死 38765，一般不改）。
+- `NEXUS_BRIDGE_DRY_RUN=1` / `NEXUS_BRIDGE_COLLECTION_ROOT=…` 仅测试用。
 - `NEXUS_BRIDGE_DEBUG=1` 把日志同时写到 stderr。
 - 改配置后必须重启桥接进程。
 
@@ -383,7 +483,7 @@ IDMan.exe /n /d <url> /p <downloadDir> [/f <filename>]
 
 | 能力 | bypass | 本项目 | 影响 |
 |---|---|---|---|
-| Collections 批量队列 | ✅ | ❌ | 不做；本项目是单文件 → IDM |
+| Collections 批量队列 | ✅ | ✅（v0.3） | 逐个换链接 + 节奏；不做 Vortex 交接 |
 | 队列限速 / 断点 / 历史 | ✅ | ❌ | 不做 |
 | Vortex / `nxm://` 交接 | ✅ | ❌ | 不做；目标是 IDM |
 | 大文件 Standard / Resumable chooser | ✅ | ❌ | >500MB 且生成失败时可能停在 chooser |
@@ -427,14 +527,24 @@ IDMan.exe /n /d <url> /p <downloadDir> [/f <filename>]
 
 ```powershell
 node tools\test-nexus-utils.js
+node tools\test-collection-utils.js
+node tools\test-queue-pacing.js
+node tools\test-idm-history.js
+node tools\print-collection.js monsterhunterworld vmu2j4
 node --check extension\content.js
+node --check extension\collection.js
 node --check extension\background.js
 node --check extension\lib\nexus-utils.js
+node --check extension\lib\collection-utils.js
+node --check extension\lib\queue-pacing.js
+node --check extension\lib\file-link.js
 node --check extension\popup.js
 node --check bridge\server.js
+node --check bridge\idm-history.js
 ```
 
-当前解析单测：**17 项**（uid、file_id、JSON/HTML、页面 HTML、API 路由、文件名、多文件选择、Generate body）。
+当前单测：`test-nexus-utils` 17 项、`test-collection-utils` 22 项、`test-queue-pacing` 14 项、
+`test-idm-history` 8 项。`print-collection.js` 只依赖公开 GraphQL，是"schema 变了"的哨兵。
 
 ### 9.2 手动回归矩阵
 
@@ -450,6 +560,12 @@ node --check bridge\server.js
 | 未登录 / Cloudflare | toast 提示，不产生错误文件 |
 | 文件名未知 | IDM 用 Content-Disposition；旧桥接可能给 UUID |
 | IDM 开始/完成弹窗 | 运行 `configure-idm.ps1` 后无弹窗 |
+| 合集页打开面板 | 列出全部 mod，大小/版本正确，不可下载项标注原因 |
+| 合集单选 / 全选 | 逐个下发，任意两条间隔 ≥2s，且前一个落盘后才发下一个 |
+| 合集重复项 | 默认不勾选；勾选后落成 `(2)`，原文件不动 |
+| 合集刷新页面 | 提示恢复进度，已完成项不重下 |
+| 合集遇到 429 | 全体冷却倒计时，结束后自动继续 |
+| 合集遇到验证 | 停在该条 + 打开验证页，通过后自动续跑 |
 
 ---
 
@@ -462,13 +578,19 @@ node --check bridge\server.js
 | 「发送失败」 | `native-host/config.json` 的 `idmPath` / `downloadDir` |
 | 「Nexus 没有返回下载链接」 | 登录态、Cloudflare、免费账号限制；toast 的「打开下载页」 |
 | 下载成 UUID 文件名 | 旧桥接进程仍强传 `/f`；重启桥接或让页面提供文件名 |
+| 合集面板提示「桥接版本过旧」 | 结束旧的 `node bridge/server.js`，重新 `bridge\start.ps1`，刷新页面 |
+| 合集列表读不到 | `node tools\print-collection.js <game> <slug>`；成人内容要传 `viewAdultContent` |
+| 合集项显示不可下载 | `file` 为空（外部来源）或 `category=REMOVED`；Nexus 上确实没了 |
+| 合集停在「限速冷却」 | 429；等冷却结束，或把面板里的“额外等待”调大 |
+| 合集要求人机验证 | 在自动打开的 mod 页完成验证；通过后自动继续，30 分钟未通过会停 |
 | IDM 没开始 | IDM 弹窗设置、IDM Integration Module 是否抢下载 |
 | 页面按钮无反应 | 广告拦截/页面脚本报错；看 F12 Console |
 
 日志位置：
 
-- 桥接：`bridge/bridge.log`（JSON lines，只记到桥接的请求）
+- 桥接：`bridge/bridge.log`（JSON lines，只记到桥接的请求）；合集事件 `skip-existing`、`spawned.subdir`
 - 扩展弹窗：最近记录 / 复制诊断
+- 合集面板：日志（最近 200 条）
 - Nexus 页面：F12 Console 搜 `[NexusDownloader]`
 - Service Worker：`chrome://extensions` → 检查视图
 - Native Host：`native-host/logs/host.log`
@@ -479,9 +601,11 @@ node --check bridge\server.js
 
 - [ ] `manifest.json` 版本、`bridge/server.js` 的 `VERSION`、popup 显示版本一致。
 - [ ] `node tools\test-nexus-utils.js` 全过。
+- [ ] `node tools\test-collection-utils.js`、`test-queue-pacing.js`、`test-idm-history.js` 全过。
 - [ ] 所有 JS `node --check` 通过。
-- [ ] 重新加载扩展 + 刷新 Nexus 页面。
+- [ ] 重新加载扩展 + 刷新 Nexus 页面（文件页和合集页各一次）。
 - [ ] 主文件 / ARCHIVED / 顶部按钮 / 下载页按钮 四条路径手测。
+- [ ] 合集页：5 个 mod 的样本合集跑一遍，确认目录名带 `[slug]`、重复项被跳过、不覆盖。
 - [ ] 确认普通点击不新开标签，Ctrl+点击仍然新开。
 - [ ] 确认 toast 文件名合理，IDM 落到 `downloads/`。
 - [ ] 桥接日志有 `spawned`，没有 `request-error`。

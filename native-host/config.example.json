@@ -1,5 +1,7 @@
 {
   "idmPath": "C:\\Program Files (x86)\\Internet Download Manager\\IDMan.exe",
+  "downloadDir": "C:\\Users\\YourName\\Downloads",
+  "collectionRoot": "C:\\Users\\YourName\\Downloads\\Collections",
   "allowedHosts": ["nexusmods.com", "nexus-cdn.com"],
   "allowAnyHost": false,
   "silent": true,

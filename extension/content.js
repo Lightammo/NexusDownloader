@@ -16,20 +16,24 @@
 
 (() => {
   const U = globalThis.NexusDownloader;
-  if (!U) return;
+  const FL = globalThis.NexusFileLink;
+  if (!U || !FL) return;
+
+  // Link resolution lives in lib/file-link.js so the Collections queue uses the
+  // exact same GenerateDownloadUrl / fallback path as the one-click flow.
+  const {
+    markAdTimerCookie,
+    fetchText,
+    callGenerateDownloadUrl,
+    fetchApiRoute,
+    fetchFilePageDownloadUrl
+  } = FL;
 
   const DEFAULTS = {
     enabled: true,
     autoIntercept: true,
     devAllDownloads: false,
     clickDownload: true
-  };
-
-  const GENERATE_ENDPOINT = '/Core/Libs/Common/Managers/Downloads?GenerateDownloadUrl';
-  const FETCH_TIMEOUT_MS = 15000;
-  const REQUEST_HEADERS = {
-    'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
-    'X-Requested-With': 'XMLHttpRequest'
   };
 
   let settings = Object.assign({}, DEFAULTS);
@@ -77,34 +81,8 @@
     }
   }
 
-  // Nexus's free-download gate reads an `ab` cookie for its ad timer. The page
-  // normally writes it while the countdown runs; a direct generation request
-  // has no countdown, so mark the window satisfied before retrying once.
-  function markAdTimerCookie() {
-    try {
-      const now = Date.now();
-      const until = Math.round((now + 5 * 60 * 1000) / 1000);
-      const expires = new Date(now + 5 * 60 * 1000).toUTCString();
-      document.cookie = `ab=0|${until};expires=${expires};domain=nexusmods.com;path=/;SameSite=Lax;Secure`;
-      return true;
-    } catch (_) {
-      return false;
-    }
-  }
-
-  async function fetchText(url, options) {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
-    try {
-      const response = await fetch(url, Object.assign({ credentials: 'include' }, options, {
-        signal: controller.signal
-      }));
-      if (response.type === 'opaqueredirect' || response.status === 0) return '';
-      return await response.text();
-    } finally {
-      clearTimeout(timer);
-    }
-  }
+  // Nexus's free-download gate reads an `ab` cookie for its ad timer; that and
+  // the raw fetch helper live in lib/file-link.js next to GenerateDownloadUrl.
 
   // -------------------------------------------------------------------------
   // toast
@@ -645,56 +623,6 @@
     return response && response.ok ? String(response.fileName || '') : '';
   }
 
-  async function callGenerateDownloadUrl(fileId, gameId, gameDomain) {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
-    try {
-      const response = await fetch(GENERATE_ENDPOINT, {
-        method: 'POST',
-        credentials: 'include',
-        redirect: 'follow',
-        headers: Object.assign({ Range: 'bytes=0-0' }, REQUEST_HEADERS),
-        body: U.buildGenerateBody({ fileId, gameId, gameDomain }),
-        signal: controller.signal
-      });
-
-      // If Nexus answers with a redirect to the CDN, use the final URL.
-      if (U.isDirectCdnUrl(response.url)) {
-        try {
-          if (response.body) await response.body.cancel();
-        } catch (_) {
-          /* ignore */
-        }
-        return response.url;
-      }
-
-      if (response.type === 'opaqueredirect' || response.status === 0) {
-        throw new Error('Nexus 返回了重定向，未能取得直链');
-      }
-
-      const contentType = (response.headers.get('content-type') || '').toLowerCase();
-      const disposition = (response.headers.get('content-disposition') || '').toLowerCase();
-      if (/octet-stream|application\/zip|application\/x-|binary\//.test(contentType) || disposition.includes('attachment')) {
-        try {
-          if (response.body) await response.body.cancel();
-        } catch (_) {
-          /* ignore */
-        }
-        throw new Error('Nexus 直接返回了文件流，未取得可交给 IDM 的直链');
-      }
-
-      const text = await response.text();
-      const url = U.parseDownloadUrlResponse(text);
-      if (url) return url;
-      if (U.isCloudflareChallenge(text)) {
-        throw new Error('Nexus 要求人机验证（Cloudflare），请刷新页面后重试');
-      }
-      throw new Error(U.describeResponseError(text, response.status) || 'Nexus 没有返回下载链接');
-    } finally {
-      clearTimeout(timer);
-    }
-  }
-
   async function resolveDownloadUrl(payload, fileId, gameId, gameDomain, href) {
     const file = U.unwrapFilePayload(payload);
     const candidates = [];
@@ -837,44 +765,6 @@
       gameId: effectiveGameId,
       error: (lastError && lastError.message) || '未能取得下载链接'
     };
-  }
-
-  async function fetchApiRoute(url, expectedFileId) {
-    if (expectedFileId) {
-      const routeFileId = U.fileIdFromHref(url);
-      if (routeFileId && routeFileId !== expectedFileId) return '';
-    }
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
-    try {
-      const response = await fetch(new URL(url, location.href).href, {
-        credentials: 'include',
-        redirect: 'follow',
-        signal: controller.signal
-      });
-      if (U.isDirectCdnUrl(response.url)) {
-        try {
-          if (response.body) await response.body.cancel();
-        } catch (_) {
-          /* ignore */
-        }
-        return response.url;
-      }
-      const text = await response.text();
-      const found = U.parseDownloadUrlFromPageHtml(text);
-      if (found) {
-        const absolute = new URL(found, location.href).href;
-        if (U.isDirectCdnUrl(absolute)) return absolute;
-      }
-      return '';
-    } finally {
-      clearTimeout(timer);
-    }
-  }
-
-  async function fetchFilePageDownloadUrl(fileId) {
-    const text = await fetchText(buildFilePageUrl(fileId, false));
-    return U.parseDownloadUrlFromPageHtml(text);
   }
 
   // -------------------------------------------------------------------------

@@ -13,18 +13,22 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const { spawn } = require('child_process');
+const Collection = require('../extension/lib/collection-utils.js');
+const idmHistory = require('./idm-history.js');
 
-const VERSION = '0.2.2';
+const VERSION = '0.3.0';
 const ROOT = __dirname;
 const CONFIG_PATH = path.join(ROOT, '..', 'native-host', 'config.json');
 const LOG_FILE = path.join(ROOT, 'bridge.log');
 const PORT = Number(process.env.NEXUS_BRIDGE_PORT || 38765);
 const HOST = '127.0.0.1';
 const MAX_BODY = 1024 * 1024;
+const MAX_CHECK_NAMES = 5000;
 
 const DEFAULTS = {
   idmPath: 'C:\\Program Files (x86)\\Internet Download Manager\\IDMan.exe',
   downloadDir: path.join(path.dirname(ROOT), 'downloads'),
+  collectionRoot: path.join(path.dirname(ROOT), 'downloads', 'Collections'),
   allowedHosts: ['nexusmods.com', 'nexus-cdn.com'],
   allowAnyHost: false,
   silent: true,
@@ -42,7 +46,11 @@ function loadConfig() {
   }
   const cfg = Object.assign({}, DEFAULTS, raw);
   if (process.env.NEXUS_BRIDGE_ALLOW_ANY === '1') cfg.allowAnyHost = true;
+  if (process.env.NEXUS_BRIDGE_DRY_RUN === '1') cfg.dryRun = true;
   cfg.downloadDir = path.resolve(String(cfg.downloadDir));
+  cfg.collectionRoot = path.resolve(
+    String(process.env.NEXUS_BRIDGE_COLLECTION_ROOT || cfg.collectionRoot || path.join(cfg.downloadDir, 'Collections'))
+  );
   return cfg;
 }
 
@@ -71,15 +79,58 @@ function isAllowedHost(hostname) {
 }
 
 function sanitizeFilename(name) {
-  let out = String(name || '')
-    .replace(/[\u0000-\u001f<>:"/\\|?*]/g, '_')
-    .replace(/^[.\s]+|[.\s]+$/g, '')
-    .trim();
-  if (!out) out = 'nexus-download.bin';
-  if (/^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\..*)?$/i.test(out)) out = '_' + out;
-  const ext = path.extname(out).slice(0, 20);
-  if (out.length > 180) out = out.slice(0, Math.max(1, 180 - ext.length)) + ext;
-  return out;
+  // Same rules as the extension, so a preflight's "already on disk" check looks
+  // for exactly the name this bridge will write.
+  const out = Collection.sanitizeFilename(name || '');
+  return out || 'nexus-download.bin';
+}
+
+/**
+ * Resolve a collection sub-folder ("Worldly Improvements [vmu2j4]") under
+ * collectionRoot. The extension never sends an absolute path: allowing that
+ * would turn the bridge into an arbitrary file writer for any local page.
+ */
+function resolveSubdir(subdir) {
+  const root = path.resolve(config.collectionRoot);
+  const raw = String(subdir || '').trim();
+  if (!raw) return root;
+  if (raw.length > 220) throw new Error('subdir is too long');
+  if (/^[\\/]/.test(raw) || /^[a-zA-Z]:/.test(raw) || raw.includes('..')) {
+    throw new Error('subdir must be a relative path inside collectionRoot');
+  }
+  const segments = raw.split(/[\\/]+/).filter(Boolean);
+  if (segments.length === 0 || segments.length > 3) {
+    throw new Error('subdir must have between 1 and 3 segments');
+  }
+  for (const segment of segments) {
+    const clean = Collection.sanitizeSegment(segment, 120);
+    if (clean !== segment) throw new Error('subdir contains illegal characters: ' + segment);
+  }
+  const dir = path.resolve(root, ...segments);
+  if (dir !== root && !dir.startsWith(root + path.sep)) {
+    throw new Error('subdir escapes collectionRoot');
+  }
+  return dir;
+}
+
+/** Never overwrite: pick `name (2).ext`, `name (3).ext`, ... */
+function uniqueFilename(dir, filename) {
+  if (!fs.existsSync(path.join(dir, filename))) return filename;
+  for (let index = 2; index < 1000; index += 1) {
+    const candidate = Collection.withSuffix(filename, index);
+    if (!fs.existsSync(path.join(dir, candidate))) return candidate;
+  }
+  throw new Error('too many copies of ' + filename);
+}
+
+function fileInfo(dir, filename) {
+  try {
+    const stat = fs.statSync(path.join(dir, filename));
+    if (!stat.isFile()) return { exists: false };
+    return { exists: true, size: stat.size, mtimeMs: stat.mtimeMs };
+  } catch (_) {
+    return { exists: false };
+  }
 }
 
 function filenameFromUrl(parsed) {
@@ -136,6 +187,7 @@ function ping() {
     idmPath: config.idmPath,
     idmExists: fs.existsSync(config.idmPath),
     downloadDir: config.downloadDir,
+    collectionRoot: config.collectionRoot,
     allowAnyHost: !!config.allowAnyHost,
     dryRun: !!config.dryRun,
     silent: !!config.silent
@@ -154,9 +206,23 @@ function download(input) {
   }
 
   const requestedName = String(input.filename || '').trim();
-  const filename = requestedName ? sanitizeFilename(requestedName) : filenameFromUrl(parsed);
-  const dir = path.resolve(config.downloadDir);
+  const baseName = requestedName ? sanitizeFilename(requestedName) : filenameFromUrl(parsed);
+  const dir = resolveSubdir(input.subdir);
   fs.mkdirSync(dir, { recursive: true });
+
+  // "Never overwrite" is enforced here, not just in the UI: skip by default,
+  // rename when the user explicitly asked to download again.
+  const onExisting = input.onExisting === 'rename' ? 'rename' : 'skip';
+  let filename = baseName;
+  let skipped = '';
+  if (baseName && fs.existsSync(path.join(dir, baseName))) {
+    if (onExisting === 'skip') {
+      skipped = 'disk';
+      log({ event: 'skip-existing', id, filename: baseName, dir, subdir: input.subdir || '' });
+      return { ok: true, id, skipped, filename: baseName, dir };
+    }
+    filename = uniqueFilename(dir, baseName);
+  }
 
   if (config.dryRun) {
     log({ event: 'dry-run', id, url: parsed.toString(), filename: filename || null, dir });
@@ -181,12 +247,40 @@ function download(input) {
   });
   child.unref();
 
-  log({ event: 'spawned', id, pid: child.pid, url: parsed.toString(), filename, dir, source: input.source || 'bridge' });
+  log({
+    event: 'spawned',
+    id,
+    pid: child.pid,
+    url: parsed.toString(),
+    filename,
+    dir,
+    subdir: input.subdir || '',
+    source: input.source || 'bridge'
+  });
   return { ok: true, id, pid: child.pid, filename, dir, command: [config.idmPath].concat(args) };
 }
 
-function openFolder() {
-  const dir = path.resolve(config.downloadDir);
+/** Bulk disk probe used by the panel's preflight and by the completion watcher. */
+function check(input) {
+  const dir = resolveSubdir(input.subdir);
+  const raw = Array.isArray(input.names) ? input.names : [];
+  if (raw.length > MAX_CHECK_NAMES) throw new Error('too many names to check (max ' + MAX_CHECK_NAMES + ')');
+  const files = {};
+  for (const name of raw) {
+    const safe = sanitizeFilename(String(name || ''));
+    if (!safe) continue;
+    files[safe] = fileInfo(dir, safe);
+  }
+  return { ok: true, dir, files, exists: fs.existsSync(dir) };
+}
+
+async function history(input) {
+  const result = await idmHistory.collect({ force: !!(input && input.force) });
+  return Object.assign({ ok: true }, result);
+}
+
+function openFolder(input) {
+  const dir = resolveSubdir(input && input.subdir);
   fs.mkdirSync(dir, { recursive: true });
   const child = spawn('explorer.exe', [dir], { detached: true, stdio: 'ignore' });
   child.on('error', (err) => {
@@ -218,10 +312,14 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
-    if (req.method === 'POST' && (req.url === '/download' || req.url === '/openFolder')) {
+    if (req.method === 'POST' && (req.url === '/download' || req.url === '/check' || req.url === '/idmHistory' || req.url === '/openFolder')) {
       const body = await readBody(req);
       const input = body ? JSON.parse(body) : {};
-      const result = req.url === '/download' ? download(input) : openFolder();
+      let result;
+      if (req.url === '/download') result = download(input);
+      else if (req.url === '/check') result = check(input);
+      else if (req.url === '/idmHistory') result = await history(input);
+      else result = openFolder(input);
       writeJson(res, 200, result);
       return;
     }
@@ -236,7 +334,7 @@ const server = http.createServer(async (req, res) => {
 
 server.listen(PORT, HOST, () => {
   const address = `http://${HOST}:${PORT}`;
-  log({ event: 'bridge-start', version: VERSION, address, pid: process.pid, idmPath: config.idmPath, downloadDir: config.downloadDir });
+  log({ event: 'bridge-start', version: VERSION, address, pid: process.pid, idmPath: config.idmPath, downloadDir: config.downloadDir, collectionRoot: config.collectionRoot });
   process.stdout.write(`Nexus Downloader bridge listening on ${address}\n`);
 });
 
