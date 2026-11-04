@@ -32,11 +32,14 @@
   const PROBE_BASE_MS = 5000;
   const PROBE_MAX_MS = 30000;
   const CHALLENGE_GIVE_UP_MS = 30 * 60 * 1000;
+  const RECONCILE_INTERVAL_MS = 5000;
+  const RECONCILE_HIDDEN_MS = 30000;
+  const SENT_STALE_MS = 2 * 60 * 60 * 1000;
 
   const SETTINGS_DEFAULTS = {
     enabled: true,
     collectionPauseSeconds: 5,
-    collectionAssumedSpeedMBps: 3.2,
+    collectionMaxConcurrent: 2,
     collectionDuplicatePolicy: 'skip',
     collectionUseIdmHistory: true,
     collectionSmallestFirst: true,
@@ -63,6 +66,8 @@
     paused: false,
     pauseReason: '',
     abort: false,
+    reconciling: false,
+    lastReconcileLogAt: 0,
     cooldownUntil: 0,
     strike: 0,
     bridge: null,
@@ -110,7 +115,7 @@
   function statusOf(key) {
     let entry = state.status.get(key);
     if (!entry) {
-      entry = { state: '', duplicate: '', detail: '', error: '' };
+      entry = { state: '', duplicate: '', detail: '', error: '', name: '', sentAt: 0, doneAt: 0 };
       state.status.set(key, entry);
     }
     return entry;
@@ -119,7 +124,7 @@
   function statusText(item) {
     const st = statusOf(item.key);
     if (st.state === 'resolving') return '解析中…';
-    if (st.state === 'sent') return '已交给 IDM';
+    if (st.state === 'sent') return '已下发，等待落盘';
     if (st.state === 'waiting') return '等待落盘…';
     if (st.state === 'done') return '已完成';
     if (st.state === 'failed') return '失败';
@@ -208,6 +213,8 @@
     .row .name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .row .file { color: #808a99; font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .row .size { flex: 0 0 66px; text-align: right; color: #9aa3b2; font-size: 11.5px; }
+    .row .redo { flex: 0 0 auto; border: 1px solid rgba(232,135,30,.45); background: rgba(232,135,30,.12); color: #f4c48a; border-radius: 6px; padding: 2px 6px; font-size: 11px; cursor: pointer; }
+    .row .redo:hover { background: rgba(232,135,30,.22); }
     .chip { flex: 0 0 auto; padding: 2px 7px; border-radius: 999px; font-size: 11px; background: rgba(255,255,255,.07); color: #aeb7c5; white-space: nowrap; }
     .chip.good { background: rgba(46,160,67,.18); color: #8fe0a2; }
     .chip.bad { background: rgba(229,72,77,.18); color: #ffb4b6; }
@@ -273,6 +280,7 @@
       '      <button data-act="missing">仅缺</button>' +
       '      <span class="spacer"></span>' +
       '      <button data-act="folder">打开目录</button>' +
+      '      <button data-act="sync">同步状态</button>' +
       '      <button data-act="reload">刷新列表</button>' +
       '    </div>' +
       '    <div class="dir">保存到 <span class="path" data-el="dir"></span></div>' +
@@ -288,9 +296,9 @@
       '      <button data-act="log">日志</button>' +
       '    </div>' +
       '    <div class="settings" data-el="settings" hidden>' +
-      '      <label>额外等待（秒）<input type="number" min="0" max="600" step="1" data-set="collectionPauseSeconds"></label>' +
-      '      <label>估算速度（MB/s）<input type="number" min="0.1" max="1000" step="0.1" data-set="collectionAssumedSpeedMBps"></label>' +
-      '      <label>重复项<select data-set="collectionDuplicatePolicy"><option value="skip">直接跳过</option><option value="ask">每次询问</option></select></label>' +
+      '      <label>下发间隔（秒）<input type="number" min="0" max="600" step="1" data-set="collectionPauseSeconds"></label>' +
+      '      <label>最大同时下载数<input type="number" min="1" max="5" step="1" data-set="collectionMaxConcurrent"></label>' +
+      '      <label>遇到重复项<select data-set="collectionDuplicatePolicy"><option value="skip">直接跳过</option><option value="ask">每次询问</option></select></label>' +
       '      <label class="rowcheck"><input type="checkbox" data-set="collectionUseIdmHistory">把 IDM 历史算作重复</label>' +
       '      <label class="rowcheck"><input type="checkbox" data-set="collectionSmallestFirst">小文件优先</label>' +
       '      <label class="rowcheck"><input type="checkbox" data-set="collectionOpenCheckPage">人机验证时自动开页面</label>' +
@@ -409,6 +417,9 @@
       case 'resetjob':
         resetJob();
         break;
+      case 'sync':
+        reconcile({ manual: true });
+        break;
       case 'more':
         state.renderLimit += PAGE_SIZE;
         renderList();
@@ -425,6 +436,9 @@
       case 'retry':
         retryFailed();
         break;
+      case 're-download':
+        reDownload(target.getAttribute('data-key'));
+        break;
       case 'log':
         dom.log.hidden = !dom.log.hidden;
         if (!dom.log.hidden) {
@@ -434,7 +448,7 @@
         }
         break;
       case 'dialog-skip':
-      case 'dialog-rename':
+      case 'dialog-replace':
       case 'dialog-cancel':
         resolveDialog(act);
         break;
@@ -468,7 +482,7 @@
   async function saveSetting(key, value) {
     let normalized = value;
     if (key === 'collectionPauseSeconds') normalized = P.clamp(Number(value), 0, 600);
-    if (key === 'collectionAssumedSpeedMBps') normalized = P.clamp(Number(value), 0.1, 1000);
+    if (key === 'collectionMaxConcurrent') normalized = P.normalizeConcurrent(value);
     if (key === 'collectionDuplicatePolicy') normalized = value === 'ask' ? 'ask' : 'skip';
     state.settings[key] = normalized;
     await send({ type: 'nd:setSettings', patch: { [key]: normalized } });
@@ -484,10 +498,32 @@
 
   function pacingOptions() {
     return {
-      pauseSeconds: Number(state.settings.collectionPauseSeconds) || 0,
-      assumedSpeedMBps: Number(state.settings.collectionAssumedSpeedMBps) || undefined,
+      gapSeconds: Number(state.settings.collectionPauseSeconds) || 0,
       hidden: document.visibilityState === 'hidden'
     };
+  }
+
+  function maxConcurrent() {
+    return P.normalizeConcurrent(state.settings.collectionMaxConcurrent);
+  }
+
+  /**
+   * Wait until fewer than maxConcurrent files are still waiting to appear on
+   * disk. The cap is ours, not IDM's: IDM has no dependable global limit, and
+   * letting a hundred links fire at once is exactly what we want to avoid.
+   */
+  async function waitForSlot() {
+    while (!state.abort) {
+      if (state.paused) await waitWhilePaused();
+      if (state.abort) return false;
+      if (pendingHandoffs().length < maxConcurrent()) return true;
+      await reconcile();
+      if (state.abort) return false;
+      if (pendingHandoffs().length < maxConcurrent()) return true;
+      updateSelectionUi();
+      await sleep(1500);
+    }
+    return false;
   }
 
   // -------------------------------------------------------------------------
@@ -583,8 +619,8 @@
     const duplicates = counts.disk + counts.ledger + counts.idm;
     if (duplicates > 0) {
       setBanner(
-        '发现 ' + duplicates + ' 个重复项（磁盘 ' + counts.disk + ' / 下发过 ' + counts.ledger + ' / IDM ' + counts.idm +
-          '），已默认不勾选；勾选后会另存为 (2) 文件，不会覆盖。',
+        '发现 ' + duplicates + ' 个同名文件（磁盘 ' + counts.disk + ' / 下发过 ' + counts.ledger + ' / IDM ' + counts.idm +
+          '），默认不勾选、也不会重复下载；要覆盖请点该行“重下”。',
         ''
       );
     } else if (response.historyError) {
@@ -608,6 +644,9 @@
       if (saved.state === 'done' || saved.state === 'sent' || saved.state === 'skipped' || saved.state === 'failed') {
         st.state = saved.state;
         st.error = saved.error || '';
+        st.name = saved.name || '';
+        st.sentAt = Number(saved.sentAt) || 0;
+        st.doneAt = Number(saved.doneAt) || 0;
         restored += 1;
       }
     }
@@ -622,7 +661,14 @@
     const items = {};
     for (const [key, st] of state.status) {
       if (!st.state && !st.duplicate) continue;
-      items[key] = { state: st.state, error: st.error || '', duplicate: st.duplicate || '' };
+      items[key] = {
+        state: st.state,
+        error: st.error || '',
+        duplicate: st.duplicate || '',
+        name: st.name || '',
+        sentAt: st.sentAt || 0,
+        doneAt: st.doneAt || 0
+      };
     }
     return send({
       type: 'nd:collectionJobSet',
@@ -803,6 +849,18 @@
     if (statusOf(item.key).detail) chip.title = statusOf(item.key).detail;
     row.appendChild(chip);
 
+    // Same name already here? Never dispatched automatically. This is the only
+    // way to ask for a replacement, and it always confirms first.
+    if (statusOf(item.key).duplicate && item.available) {
+      const redo = document.createElement('button');
+      redo.className = 'redo';
+      redo.setAttribute('data-act', 're-download');
+      redo.setAttribute('data-key', item.key);
+      redo.textContent = '重下';
+      redo.title = '删除同名旧文件后再下载（会覆盖）';
+      row.appendChild(redo);
+    }
+
     dom.rows.set(item.key, { row, chip, checkbox });
     return row;
   }
@@ -821,15 +879,16 @@
     if (!dom || !state.meta) return;
     const chosen = Array.from(state.selected).filter((key) => state.byKey.has(key));
     const done = state.items.filter((item) => statusOf(item.key).state === 'done').length;
-    const sent = state.items.filter((item) => {
+    const pendingDisk = state.items.filter((item) => {
       const s = statusOf(item.key).state;
-      return s === 'sent' || s === 'waiting' || s === 'done';
+      return s === 'sent' || s === 'waiting';
     }).length;
     dom.sub.textContent =
       'v' + state.meta.revision + ' · ' + state.items.length + ' 个 mod · ' + C.formatSize(state.meta.totalSize) +
       ' · 已选 ' + chosen.length;
     dom.progress.textContent =
-      '已选 ' + chosen.length + ' · 已交给 IDM ' + sent + ' · 已落盘 ' + done +
+      '已选 ' + chosen.length + ' · 已落盘 ' + done + ' · 待落盘 ' + pendingDisk +
+      ' · 并发上限 ' + maxConcurrent() + ' · 间隔 ' + Math.round(P.computeGapMs(pacingOptions()) / 1000) + 's' +
       (state.runTotal ? ' · 本次 ' + state.runDone + '/' + state.runTotal : '') +
       (state.cooldownUntil > Date.now() ? ' · 限速冷却 ' + P.cooldownSecondsLeft(state.cooldownUntil) + 's' : '');
     const fraction = state.items.length ? (done / state.items.length) * 100 : 0;
@@ -881,7 +940,7 @@
 
       const title = document.createElement('div');
       title.className = 'dialog-title';
-      title.textContent = '发现 ' + duplicates.length + ' 个重复项（不会覆盖任何文件）';
+      title.textContent = '发现 ' + duplicates.length + ' 个同名文件（默认不重复下载）';
 
       const list = document.createElement('div');
       list.className = 'dialog-list';
@@ -902,15 +961,15 @@
       const skip = document.createElement('button');
       skip.setAttribute('data-act', 'dialog-skip');
       skip.textContent = '跳过这些（推荐）';
-      const rename = document.createElement('button');
-      rename.setAttribute('data-act', 'dialog-rename');
-      rename.textContent = '另存后重下';
+      const replace = document.createElement('button');
+      replace.setAttribute('data-act', 'dialog-replace');
+      replace.textContent = '覆盖下载（先删旧文件）';
       const cancel = document.createElement('button');
       cancel.setAttribute('data-act', 'dialog-cancel');
       cancel.textContent = '取消';
       actions.appendChild(cancel);
       actions.appendChild(skip);
-      actions.appendChild(rename);
+      actions.appendChild(replace);
 
       box.appendChild(title);
       box.appendChild(list);
@@ -927,7 +986,7 @@
     if (dialogResolve) {
       const resolve = dialogResolve;
       dialogResolve = null;
-      resolve(act === 'dialog-rename' ? 'rename' : act === 'dialog-skip' ? 'skip' : 'cancel');
+      resolve(act === 'dialog-replace' ? 'replace' : act === 'dialog-skip' ? 'skip' : 'cancel');
     }
   }
 
@@ -964,7 +1023,7 @@
   }
 
   async function startQueue() {
-    if (state.running || !state.items.length) return;
+    if (state.running || dialogResolve || !state.items.length) return;
     const ping = await ensureBridge();
     if (!ping) return;
 
@@ -982,22 +1041,28 @@
       duplicateAction = answer;
     }
 
-    const plan = keys.filter((key) => {
-      const st = statusOf(key);
-      if (st.duplicate && state.settings.collectionDuplicatePolicy === 'ask' && duplicateAction === 'skip') return false;
-      return true;
-    });
-    const keep = new Set(plan);
+    const replaceKeys = new Set();
+    const plan = [];
+    let skippedDuplicates = 0;
     for (const key of keys) {
       const st = statusOf(key);
-      if (!keep.has(key) && st.duplicate) {
+      if (st.duplicate && duplicateAction !== 'replace') {
         st.state = 'skipped';
-        st.error = '重复项（按设置跳过）';
+        st.error = '同名文件已存在，未重复下载（可在该行点“重下”覆盖）';
+        skippedDuplicates += 1;
+        continue;
       }
+      if (st.duplicate) replaceKeys.add(key);
+      plan.push(key);
     }
 
     if (!plan.length) {
-      setBanner('选中的都是重复项，已按设置跳过。', '');
+      setBanner(
+        skippedDuplicates
+          ? '选中的都是已存在的同名文件，已全部跳过。要覆盖请在该行点“重下”。'
+          : '没有可下载的项。',
+        ''
+      );
       renderList();
       updateSelectionUi();
       return;
@@ -1021,7 +1086,12 @@
     state.runTotal = plan.length;
     state.runDone = 0;
     await adoptSharedCooldown();
-    setBanner('', '');
+    setBanner(
+      skippedDuplicates
+        ? '已跳过 ' + skippedDuplicates + ' 个同名文件（默认不重复下载）；要覆盖请点行内“重下”。'
+        : '',
+      ''
+    );
     renderList();
     updateSelectionUi();
     log('开始下载 ' + plan.length + ' 个文件到 ' + (state.dir || subdir));
@@ -1038,10 +1108,11 @@
 
       await waitWhilePaused();
       if (state.abort) break;
+      await waitForSlot();
+      if (state.abort) break;
       await waitCooldown();
       if (state.abort) break;
 
-      const forceRename = !!st.duplicate;
       let outcome = '';
       // A challenge stops the queue on this file; once the user passes it we
       // retry the same file instead of walking past it.
@@ -1049,7 +1120,7 @@
         outcome = await processItem(item, {
           index,
           total: runKeys.length,
-          onExisting: forceRename ? 'rename' : 'skip'
+          onExisting: replaceKeys.has(key) ? 'replace' : 'skip'
         });
         if (outcome === 'challenge-retry' && !state.abort) continue;
         break;
@@ -1070,9 +1141,9 @@
       }
       if (state.abort) break;
 
-      const pauseMs = P.computePauseMs(item.sizeKb, pacingOptions());
-      log('等待 ' + Math.round(pauseMs / 1000) + ' 秒后继续（节奏）…');
-      await waitSleep(pauseMs);
+      const gapMs = P.computeGapMs(pacingOptions());
+      log('等待 ' + Math.round(gapMs / 1000) + ' 秒后下发下一个（间隔）…');
+      await waitSleep(gapMs);
       if (outcome === 'ok') state.runDone += 1;
     }
 
@@ -1089,21 +1160,29 @@
 
     const failed = state.items.filter((item) => statusOf(item.key).state === 'failed').length;
     const done = state.items.filter((item) => statusOf(item.key).state === 'done').length;
+    const pendingDisk = state.items.filter((item) => {
+      const s = statusOf(item.key).state;
+      return s === 'sent' || s === 'waiting';
+    }).length;
     if (aborted) {
-      setBanner('已停止。已完成 ' + done + ' 个，失败 ' + failed + ' 个。', '');
+      setBanner('已停止。已落盘 ' + done + ' 个，待落盘 ' + pendingDisk + ' 个，失败 ' + failed + ' 个。', '');
       log('队列已停止。', 'info');
     } else {
-      setBanner('本次结束：已落盘 ' + done + ' 个，失败 ' + failed + ' 个。', failed ? '' : 'good');
-      log('队列结束：完成 ' + done + '，失败 ' + failed + '。', failed ? 'bad' : 'good');
+      setBanner(
+        '本次结束：已落盘 ' + done + ' 个' +
+          (pendingDisk ? '，IDM 还在下载 ' + pendingDisk + ' 个（会自动同步）' : '') +
+          '，失败 ' + failed + ' 个。',
+        failed ? '' : 'good'
+      );
+      log('队列结束：已落盘 ' + done + '，待落盘 ' + pendingDisk + '，失败 ' + failed + '。', failed ? 'bad' : 'good');
     }
   }
 
   function estimateDuration(keys) {
-    let ms = 0;
-    for (const key of keys) {
-      const item = state.byKey.get(key);
-      ms += P.computePauseMs(item ? item.sizeKb : 0, pacingOptions());
-    }
+    // Time is set by the dispatch gap, not by transfer time: downloads overlap
+    // up to maxConcurrent, and the next link is asked for on a fixed interval.
+    const gapMs = P.computeGapMs(pacingOptions());
+    const ms = gapMs * Math.max(1, keys.length);
     const minutes = Math.round(ms / 60000);
     if (minutes < 1) return '不到 1 分钟';
     if (minutes < 60) return '约 ' + minutes + ' 分钟';
@@ -1147,6 +1226,54 @@
       renderList();
       updateSelectionUi();
       setBanner('已把 ' + count + ' 个失败项重新勾选，点“下载选中”重试。', 'good');
+    }
+  }
+
+  /**
+   * Explicit "download this one again": the only path that may replace an
+   * existing file. It always asks first, and it never creates a `(2)` copy.
+   */
+  async function reDownload(key) {
+    if (state.running || !key) return;
+    const item = state.byKey.get(key);
+    if (!item) return;
+    const st = statusOf(key);
+    if (!st.duplicate) return;
+
+    const ping = await ensureBridge();
+    if (!ping) return;
+
+    const name = item.uri || item.fileName || item.modName;
+    const detail = st.detail ? '\n当前：' + st.detail : '';
+    if (
+      !window.confirm(
+        '覆盖重下：' + name + detail + '\n\n会先删除目标目录里的同名文件，再让 IDM 重新下载。\n确定吗？'
+      )
+    ) {
+      return;
+    }
+
+    state.running = true;
+    state.abort = false;
+    state.paused = false;
+    state.runTotal = 1;
+    state.runDone = 0;
+    updateSelectionUi();
+    try {
+      const outcome = await processItem(item, { index: 1, total: 1, onExisting: 'replace' });
+      if (outcome === 'ok') {
+        st.duplicate = '';
+        log('已覆盖重下：' + name, 'good');
+      }
+      await saveJob();
+    } finally {
+      state.running = false;
+      state.abort = false;
+      state.paused = false;
+      state.runTotal = 0;
+      state.runDone = 0;
+      renderList();
+      updateSelectionUi();
     }
   }
 
@@ -1222,18 +1349,21 @@
             st.error = '目标目录已有同名文件';
             log(prefix + '跳过：目标目录已有 ' + (response.filename || item.uri), 'info');
           } else {
-            st.state = 'waiting';
-            updateRow(item.key);
             const name = response.filename || item.uri;
+            st.state = 'sent';
+            st.name = name;
+            st.sentAt = Date.now();
+            updateRow(item.key);
             log(prefix + '已交给 IDM：' + name, 'good');
-            const pause = P.computePauseMs(item.sizeKb, pacingOptions());
-            const landed = await waitForDisk(name, P.diskWaitMs(pause));
+            // Fast path only: IDM may queue for a while, so completion is not
+            // decided here. The reconciler below keeps checking the folder.
+            const landed = await waitForDisk(name, P.diskWaitMs());
             if (landed) {
               st.state = 'done';
+              st.doneAt = Date.now();
               log(prefix + '已落盘：' + name, 'good');
             } else {
-              st.state = 'sent';
-              log(prefix + '还在下载中（IDM 会继续）：' + name, 'info');
+              log(prefix + '已下发，IDM 还在下载（会自动同步落盘状态）', 'info');
             }
           }
           updateRow(item.key);
@@ -1307,11 +1437,109 @@
         subdir: currentSubdir(),
         names: [name]
       });
-      const info = response && response.ok && response.files ? Object.values(response.files)[0] : null;
+      const info = response && response.ok ? findFileInfo(response.files, name) : null;
       if (info && info.exists && info.size > 0) return true;
       await sleep(1000);
     }
     return false;
+  }
+
+  function findFileInfo(files, name) {
+    if (!files || !name) return null;
+    if (files[name]) return files[name];
+    const wanted = String(name).toLowerCase();
+    for (const key of Object.keys(files)) {
+      if (key.toLowerCase() === wanted) return files[key];
+    }
+    return null;
+  }
+
+  // -------------------------------------------------------------------------
+  // completion reconciliation
+  // -------------------------------------------------------------------------
+
+  /**
+   * IDM has no status API, and it may sit in its own queue for tens of seconds
+   * before it moves an archive into the target folder. Rather than guessing a
+   * timeout, the folder itself is the source of truth: every few seconds we ask
+   * the bridge once for all files we have handed over but not seen yet, and mark
+   * the ones that appeared as done. One request, no IDM parsing.
+   */
+  function pendingHandoffs() {
+    return state.items.filter((item) => {
+      const st = statusOf(item.key);
+      return st.state === 'sent' || st.state === 'waiting';
+    });
+  }
+
+  async function reconcile(options) {
+    const opts = options || {};
+    if (state.reconciling || !state.meta) return { checked: 0, done: 0 };
+    const pending = pendingHandoffs();
+    if (!pending.length) {
+      if (opts.manual) setBanner('没有等待同步的下发记录。', '');
+      return { checked: 0, done: 0 };
+    }
+
+    state.reconciling = true;
+    let doneCount = 0;
+    const changed = [];
+    try {
+      for (let index = 0; index < pending.length; index += 400) {
+        const chunk = pending.slice(index, index + 400);
+        const names = chunk
+          .map((item) => statusOf(item.key).name || C.sanitizeFilename(item.uri))
+          .filter(Boolean);
+        if (!names.length) continue;
+
+        const response = await send({ type: 'nd:collectionPoll', subdir: currentSubdir(), names });
+        if (!response || !response.ok) continue;
+
+        for (const item of chunk) {
+          const st = statusOf(item.key);
+          const name = st.name || C.sanitizeFilename(item.uri);
+          const info = findFileInfo(response.files, name);
+          if (info && info.exists && info.size > 0) {
+            st.state = 'done';
+            st.doneAt = Date.now();
+            st.error = '';
+            doneCount += 1;
+            changed.push(item.key);
+          } else if (st.state === 'sent' && st.sentAt && Date.now() - st.sentAt > SENT_STALE_MS) {
+            st.state = 'failed';
+            st.error = 'IDM 超过 2 小时没有落盘，可以重试';
+            changed.push(item.key);
+          }
+        }
+      }
+    } finally {
+      state.reconciling = false;
+      state.lastReconcileAt = Date.now();
+    }
+
+    if (changed.length) {
+      for (const key of changed) updateRow(key);
+      updateSelectionUi();
+      await saveJob();
+      if (doneCount > 0) log('同步：新确认 ' + doneCount + ' 个文件已落盘。', 'good');
+      if (opts.manual) {
+        setBanner('已同步：新确认 ' + doneCount + ' 个落盘。', doneCount ? 'good' : '');
+      }
+    } else if (opts.manual) {
+      setBanner('已同步：IDM 还没有把新文件放进目录，稍后会自动再查。', '');
+    }
+
+    return { checked: pending.length, done: doneCount };
+  }
+
+  function startReconciler() {
+    setInterval(() => {
+      if (!state.meta) return;
+      if (document.visibilityState === 'hidden' && Date.now() - state.lastReconcileAt < RECONCILE_HIDDEN_MS) {
+        return;
+      }
+      reconcile().catch(() => {});
+    }, RECONCILE_INTERVAL_MS);
   }
 
   // -------------------------------------------------------------------------
@@ -1466,7 +1694,13 @@
 
     document.addEventListener('visibilitychange', () => {
       updateSelectionUi();
+      if (document.visibilityState === 'visible') reconcile().catch(() => {});
     });
+
+    // Whatever a previous session left as "sent" gets checked against the
+    // folder right away, then keeps being checked until it lands.
+    reconcile().catch(() => {});
+    startReconciler();
   }
 
   function reportBootError(err) {

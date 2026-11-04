@@ -1,11 +1,18 @@
 # Collections 批量下载 — 需求梳理与开发计划
 
-> 状态：**已实现（v0.3.0）**，本文保留为设计记录与参数依据
-> 目标版本：v0.3.0（extension / bridge 同步）
+> 状态：**已实现（v0.3.1）**，本文保留为设计记录与参数依据
+> 目标版本：v0.3.1（extension / bridge 同步）
 > 最后更新：2026-11-04
 > 实验样本：<https://www.nexusmods.com/games/monsterhunterworld/collections/vmu2j4>（Worldly Improvements，5 个 mod）
 > 实现位置：`extension/collection.js`、`extension/lib/collection-utils.js`、`extension/lib/queue-pacing.js`、
 > `extension/lib/file-link.js`、`bridge/idm-history.js`、`bridge/server.js`；测试见 `tools/test-collection-utils.js` 等。
+
+> **v0.3.1 变更（以本节为准）**
+> 1. 删除“估算速度/传输时间”参数：下发节奏改成**固定间隔秒数**（默认 5s，2s 下限，隐藏标签页 ×3），网速与配置无关。
+> 2. 新增**最大同时下载数**（默认 2，范围 1–5）：已下发但未落盘的文件数达到上限时，队列等待对账释放名额。
+> 3. 重复项语义改为“**同名文件不重复下载**”：不生成 `(2)` 文件名；默认不勾选也不下发；
+>    `ask` 模式可在开始前选择“跳过 / 覆盖下载”；行内“重下”是唯一的覆盖入口（先确认，再删旧文件重下）。
+> 下文 §5.4 / §6.1 / §7 中与这三点冲突的旧描述已同步修改；如仍有残留，以本节为准。
 
 ---
 
@@ -84,7 +91,7 @@ docs/
 | **R4** | 下载到本地目录 | 每个 mod 生成直链 → 交给 IDM；串行限速；失败可单条重试；整体可暂停/继续 |
 | **R5** | 用户指定根目录，按 collection 名字建新文件夹 | 设置里填根目录；实际落到 `<根目录>\<collection 名>\<uri 文件名>`；不同合集互相隔离 |
 | **R6** | 天然去重（目录）+ IDM 历史 + 扩展下发记录 | 三源都参与判定，重复项默认不勾选并标注来源 |
-| **R7** | 遇到重复任务要用户确认 | 默认跳过；可切换"每次询问"；确认框只有 跳过 / 另存重下 / 取消，**绝不覆盖** |
+| **R7** | 遇到重复任务要用户确认 | 默认跳过；可切换"每次询问"；确认框只有 跳过 / 覆盖下载 / 取消；不生成 `(2)` |
 | **R8** | 规避/应对 N 网人工验证 | 不触发（页面内、串行、抖动）+ 自动暂停 + 定时探针 + 自动恢复；**不做**任何绕过验证的技术 |
 
 补充的非功能性要求（建议一并做）：
@@ -257,23 +264,23 @@ query CollectionRevision($slug: String!, $revision: Int!, $adult: Boolean, $doma
 
 ### 5.4 确认交互（R7）
 
-**策略可配、默认跳过、永不覆盖**：`collectionDuplicatePolicy` 默认 `skip`（发现重复直接跳过并写日志，不打扰），可切成 `ask`（每次弹确认框）。
+**策略可配、默认跳过、绝不重复下载**：`collectionDuplicatePolicy` 默认 `skip`（发现同名文件直接跳过并写日志，不打扰），可切成 `ask`（每次弹确认框）。
 
 `ask` 模式下开始下载前弹一次：
 
 ```
-发现 3 个重复项（不会覆盖任何已有文件）
+发现 3 个同名文件（默认不重复下载）
   Stracker's Loader      磁盘已存在（555 KB · 2026-11-03 18:24）
   Clarity 1.7            IDM 历史有记录（2026-11-02 21:10）
   Fatalis Patch          扩展下发过（已完成 · 2026-11-02 21:22）
 
-[ 跳过这 3 个（推荐） ]   [ 重新下载 → 另存为 … (2).zip ]   [ 取消 ]
-☑ 本次记住选择（只对这次合集生效）
+[ 跳过这些（推荐） ]   [ 覆盖下载（先删旧文件） ]   [ 取消 ]
 ```
 
-- **绝对不覆盖**：桥接 `/download` 带 `onExisting` 参数，默认 `"skip"`；即便用户点"重新下载"，也只用 `"rename"` 落到 `<name> (2).ext`，旧文件原样保留。**不提供**"删除后重下"，也**不存在**任何自动覆盖路径。
-- 重复项在列表里默认**不勾选**；行内动作只有"跳过"和"重下（另存）"两种，没有"覆盖"。
-- 下发前（换到直链之后）再查一次 L1/L3：命中就标记 `skipped` 并写日志，不弹第二个框（避免"预检没有、生成后又发现"的二次打扰）。
+- **不会生成 `(2)` 文件名**：桥接 `/download` 的 `onExisting` 只有 `skip` / `replace`；`skip` 直接返回 `skipped:'disk'`。
+- **唯一的覆盖入口**是行内“重下”：先 `confirm()` 说明会删除同名旧文件，用户同意后才发 `replace`；队列本身永远不带 `replace`。
+- 重复项在列表里默认**不勾选**；`ask` 模式下即使勾选，也要在弹框里再确认一次才会覆盖。
+- 下发前（换到直链之后）再查一次 L1/L3：命中就标记 `skipped` 并写日志，不弹第二个框。
 
 ---
 
@@ -283,31 +290,30 @@ query CollectionRevision($slug: String!, $revision: Int!, $adult: Boolean, $doma
 
 ### 6.1 下发节奏（参考 nexusmods-bypass，只取行为不取代码）
 
-免费账号下**节奏比并发重要**。bypass 插件的批量队列做法（`src/content/ndc.js` + `src/lib/shared.js`）值得照搬，参数直接对齐：
+免费账号下**节奏比并发重要**。bypass 插件的批量队列做法（`src/content/ndc.js` + `src/lib/shared.js`）值得照搬，但**不再按文件大小估算传输时间**（网速不可预测，估算只会给出错误结论）：
 
 | 参数 | bypass 的默认 | 我们的取值 | 说明 |
 |---|---|---|---|
-| 两次下发之间的硬下限 | `MIN_HANDOFF_GAP_SECONDS = 2s` | **2s** | 任何情况下都不背靠背发请求（跳过/失败的条目也等 2s） |
-| 每次下发后的额外等待 | `pauseBetweenDownload = 5s`（可配 0–600） | **5s**，可配 | 用户可在面板里调大 |
-| 估算传输时间 | `size(MB) / downloadSpeed`，`downloadSpeed = 3.2 MB/s` | 同公式，速度可配（0.1–1000） | 只用于"等多久"，不做限速 |
-| 单次等待上限 | `MAX_PAUSE_SECONDS = 600s` | **180s** | 超大文件不把队列卡死 |
+| 两次下发之间的硬下限 | `MIN_HANDOFF_GAP_SECONDS = 2s` | **2s** | 任何情况下都不背靠背发请求 |
+| 下发间隔 | `pauseBetweenDownload = 5s`（可配 0–600） | **5s**，可配 | 固定秒数，与文件大小无关 |
+| 最大同时下载 | 无（交给 Vortex） | **2**，可配 1–5 | 已下发但未落盘数达到上限就等对账释放 |
+| 落盘快速观察 | `pauseBetweenDownload` 估算 | **8s** | 没看到就交给 5s 一次的对账，不判失败 |
 | 失败重试 | `retryDelayMs` = 1.5s 起指数到 30s + 等量抖动 | 同 | 多标签/重启不会锁步重试 |
-| 限速冷却 | 30s 起、指数到 600s，最多 6 次，**跨标签共享** | 同 | 存 `chrome.storage.local.rateLimitUntil` |
+| 限速冷却 | 30s 起、指数到 600s，最多 6 次，**跨标签共享** | 同 | 存 `chrome.storage.local.collectionRateLimit` |
 | `Retry-After` | 优先且**不缩短** | 同 | 服务器说了算 |
 | 看门狗 | 7s 轮询 | 同 | 检测挑战 / 掉登录 / 页面被接管 |
 | 队列排序 | `smallestFirst = true` | 同（可关） | 小文件先完成，问题早暴露 |
 | 大批量确认 | 超过阈值先弹"要排 N 个文件吗" | 同（>50 弹） | 防误点 |
 
-我们的等待公式（比 bypass 强一点：**我们能看见磁盘**）：
+下发模型：
 
 ```
-pauseMs = clamp(sizeMB / assumedSpeedMBps * 1000 + pauseBetweenSeconds * 1000, 2000, 180000)
-
-下发第 N+1 条的时刻 = max(下发第 N 条 + pauseMs,
-                          第 N 个文件出现在目标目录 或 落盘等待上限(min(pauseMs*3, 180s)))
+每隔 N 秒下发一个文件（N 默认 5，隐藏标签页 ×3）
+下发前若“已下发未落盘”数量 >= 并发上限，先等对账把名额腾出来
+下发后只快速观察 8 秒，没落盘就交给 5 秒一次的批量对账，不判失败
 ```
 
-即 **换链接 → 交给 IDM → 等这个文件真的出现在目标目录（或到等待上限就继续，IDM 在后台接着下）→ 才换下一个**。bypass 看不到 Vortex 的下载进度，只能按文件大小估；我们能用桥接 `/check` 轮询磁盘，所以"一次只下发一个、且等它落盘"是天然成立的，不会出现"500 个链接一口气全生成"。
+这样既不会一口气把几百个链接全生成，也不再用“文件大小 / 猜测速度”来做判断；下载快慢完全交给 IDM 和网络。
 
 其余不触发措施：
 
@@ -364,6 +370,24 @@ pauseMs = clamp(sizeMB / assumedSpeedMBps * 1000 + pauseBetweenSeconds * 1000, 2
 | 403 + "moderation" | 审核中 | 该条失败并说明，继续下一条 |
 | 文件页 404 / file 为 REMOVED | 文件不存在 | 标记不可下载，跳过（这才是唯一允许"跳过并继续"的情况） |
 
+### 6.5 落盘同步（实测修正）
+
+首版实现只在下发后等 `min(pause*3, 180s)`（小文件 15 秒），超时就记 `sent` 并且**再也不复查**。
+实测 `vmu2j4` 的 5 个文件：IDM 实际在 spawn 后 4s / 17s / 7s / 26s / 43s 才把文件放进目标目录
+（IDM 自己排队），于是 3 个被永久标成"已下发未完成"，磁盘上其实全都在。
+
+修正后的判定模型：
+
+1. 下发后快速轮询 `/check` ≤8 秒（命中即 `done`）；
+2. 否则记 `sent` + `sentAt` + 实际文件名，**不判失败**；
+3. 面板每 5 秒把所有 `sent`/`waiting` 的名字**合并成一次** `/check`（几百个也只发一次请求），
+   文件出现即 `done`；页面重开、切回前台、手动点"同步状态"都会立刻同步一次；
+4. 超过 2 小时仍未出现 → `failed`（可重试），避免 IDM 长队列被误判为失败。
+
+**IDM 日志/注册表不参与完成判定**，只用于去重（"这个文件以前下过吗"）。原因是 IDM 没有状态 API，
+而磁盘上的文件是否存在才是我们真正关心的、且 IDM 只有在下载完成后才会把文件放到目标目录，
+所以 `exists && size > 0` 是可靠的完成信号；读 IDM 内部记录既慢、又受编码/版本/清空列表影响。
+
 ---
 
 ## 7. 目录与命名（R5，已确认）
@@ -374,7 +398,7 @@ pauseMs = clamp(sizeMB / assumedSpeedMBps * 1000 + pauseBetweenSeconds * 1000, 2
 - **子目录固定带 slug**（`collectionFolderSuffix` 默认 `true`），不同游戏的同名合集不会撞目录；slug 是 Nexus 的稳定短码，比合集名可靠。
 - 文件名一律用 GraphQL 的 `uri`；桥接 `sanitizeFilename()` 已覆盖 `<>:"/\|?*`、保留名、长度 180，两端共用同一套规则（见 §9 的共享模块）。
 - 目录由桥接创建（`fs.mkdirSync(recursive)`），扩展只传 `subdir`，**不传绝对路径**，避免扩展被滥用成任意目录写入器。
-- **同名文件已存在时**：默认跳过；用户显式选择重下时才用 `(2)`、`(3)`… 另存，绝不覆盖（§5.4）。
+- **同名文件已存在时**：不下载、不重命名（不会出现 `(2)`）；行内“重下”是唯一覆盖入口，确认后删旧文件重下（§5.4）。
 - 可选：在合集目录里写一份 `collection.json` 侧车（合集名、slug、revision、每个 mod 的 `gameId/modId/fileId/uri`、下载时间），便于以后核对/重下；体积小、无副作用。
 - 打开目录：`POST /openFolder { subdir }`。
 
@@ -410,7 +434,7 @@ pauseMs = clamp(sizeMB / assumedSpeedMBps * 1000 + pauseBetweenSeconds * 1000, 2
 
 | # | 任务 | 文件 | 量 |
 |---|---|---|---|
-| P2-1 | `/download` 支持 `subdir` 与 `onExisting: 'skip'\|'rename'`（默认 skip）；解析为 `path.resolve(root, subdir)` 并校验**必须仍在 root 之下**；`rename` 时找下一个可用 `(n)` 名；返回 `dir`、`filename` | `bridge/server.js` | M |
+| P2-1 | `/download` 支持 `subdir` 与 `onExisting: 'skip'\|'replace'`（默认 skip）；`replace` 只删同名旧文件，不生成 `(2)`；解析为 `path.resolve(root, subdir)` 并校验**必须仍在 root 之下**；返回 `dir`、`filename` | `bridge/server.js` | M |
 | P2-2 | `/check`：`{subdir, names[]}` → `{dir, files:{name:{exists,size,mtimeMs}}}` | 同上 | S |
 | P2-3 | `/idmHistory`：解析注册表 + `DwnlData` 日志 + `UrlHistory.txt`，返回 `{records:[{url,host,path,fileName,finalName,size,status,dateAdded}]}`，60s 缓存 | `bridge/idm-history.js` | M |
 | P2-4 | `/openFolder` 支持 `subdir`；`/ping` 返回 `collectionRoot` | `bridge/server.js` | S |
@@ -426,21 +450,21 @@ pauseMs = clamp(sizeMB / assumedSpeedMBps * 1000 + pauseBetweenSeconds * 1000, 2
 | P3-2 | 列表：checkbox、mod 名、文件名（截断+title）、版本、大小、状态徽标、行内操作 | M |
 | P3-3 | 选择器：全选 / 全不选 / 反选 / 仅缺（未下载的）/ 仅非 optional | S |
 | P3-4 | 底部：进度条（已下发/已落盘/失败）、日志区（最近 50 条）、开始/暂停/继续/重试失败 | S |
-| P3-5 | 重复项确认对话框（§5.4，只有 跳过/另存重下/取消，没有覆盖）+ 行内"跳过 / 重下（另存）" | M |
+| P3-5 | 重复项确认对话框（§5.4：跳过 / 覆盖下载 / 取消）+ 行内“重下”（确认后覆盖） | M |
 | P3-6 | 空/异常态：桥接未启动、未登录、合集为空、全部不可下载、revision 被撤回 | S |
 | P3-7 | 与 v0.2 点击拦截共存：面板内点击不被 `handleDownloadClick` 吞掉 | S |
-| P3-8 | 节奏设置：额外等待秒数（0–600）、估算速度（0.1–1000 MB/s）、小文件优先、重复策略（跳过/每次问）、自动打开验证页 | S |
+| P3-8 | 节奏设置：下发间隔秒数（0–600）、最大同时下载（1–5）、小文件优先、重复策略（跳过/每次问）、自动打开验证页 | S |
 
 ### P4 · 队列引擎（R4/R6/R9/R10）
 
 | # | 任务 | 量 |
 |---|---|---|
 | P4-1 | 抽出 `resolveByFileId(fileId, gameId, gameDomain)`（把现有 `resolveDownloadUrl` 里"纯 fileId 换链接"的部分拆成可复用函数，保留原有 DOM 回退路径不变） | M |
-| P4-2 | **节奏引擎**（§6.1）：`pauseMs = clamp(估算传输 + 额外等待, 2s, 180s)`；下发后等落盘或超时；隐藏标签页 ×3；跳过/失败项之间也等 2s；小文件优先 | M |
+| P4-2 | **节奏引擎**（§6.1）：固定间隔 `gapMs`；按下发未落盘数限制并发；隐藏标签页 ×3；小文件优先 | M |
 | P4-3 | 限速/退避：共享冷却（30s→600s，6 次）、`Retry-After`、等量抖动重试（1.5s→30s）、源站 5xx 等待 30s→300s | M |
 | P4-4 | 会话守卫：挑战检测 → 停在该条 → 打开验证页 → 探针 → 自动恢复（§6.3） | L |
 | P4-5 | 持久化/恢复：作业 + 冷却写 `chrome.storage.local`；页面重开恢复面板；"继续"按钮 | M |
-| P4-6 | 落盘确认：下发后轮询 `/check`（5s，上限见 §6.1）标记 `done`；比对大小 | S |
+| P4-6 | 落盘确认：下发后快速轮询 `/check` ≤8s；没落盘记 `sent`，由**每 5s 一次的批量同步**（一次请求查全部 pending）转 `done`；页面重开也先同步；2 小时仍未出现才 `failed`（见 §6.5） | S |
 | P4-7 | 台账写入（§4.3）+ 台账驱动的预检 | S |
 | P4-8 | 失败分类与汇总（Cloudflare/未登录/429/5xx/文件不存在/桥接断开） | M |
 
@@ -471,7 +495,7 @@ pauseMs = clamp(sizeMB / assumedSpeedMBps * 1000 + pauseBetweenSeconds * 1000, 2
 
 | 方法 | 路径 | Body | 返回 |
 |---|---|---|---|
-| POST | `/download` | `{url, filename?, referrer?, source?, subdir?, onExisting?: 'skip'\|'rename'}` | `{ok, id, filename, dir, skipped?:'disk', command?}` |
+| POST | `/download` | `{url, filename?, referrer?, source?, subdir?, onExisting?: 'skip'\|'replace'}` | `{ok, id, filename, dir, skipped?:'disk', command?}` |
 | POST | `/check` | `{subdir, names:[...]}` | `{ok, dir, files:{name:{exists,size,mtimeMs}}}` |
 | POST | `/idmHistory` | `{}` | `{ok, records:[...], scannedAt}` |
 | POST | `/openFolder` | `{subdir?}` | `{ok, dir}` |
@@ -494,7 +518,7 @@ pauseMs = clamp(sizeMB / assumedSpeedMBps * 1000 + pauseBetweenSeconds * 1000, 2
 ### 9.3 共享纯函数
 
 - 新增 `extension/lib/collection-utils.js`（UMD，和 `nexus-utils.js` 同风格）；
-- 新增 `extension/lib/queue-pacing.js`：`computePauseMs(sizeKb, opts)`、`retryDelayMs(attempt)`、`parseRetryAfter()`、`nextRateLimitUntil(strike, headerSeconds)` —— 纯函数，便于单测节奏策略；
+- 新增 `extension/lib/queue-pacing.js`：`computeGapMs(opts)`、`normalizeConcurrent(v)`、`retryDelayMs(attempt)`、`parseRetryAfterSeconds()`、`nextCooldown(strike, header)` —— 纯函数，便于单测节奏策略；
 - 桥接 `require('../extension/lib/collection-utils.js')` 复用 `sanitizeSegment()`，**保证扩展预检与桥接实际落盘用同一套清洗规则**（否则"预检说没有、实际写成了另一个名字"）。
 
 ---
@@ -526,7 +550,7 @@ node --check bridge\idm-history.js
 | 单选 1 个下载 | 1 个 IDM 任务，落到 `<root>\Worldly Improvements [vmu2j4]\<uri>` |
 | 全选下载 | 5 个任务**串行**下发（每条等上一次落盘 + 额外 5s，任何两条间隔 ≥2s），全部落盘 |
 | 再点一次"下载全部" | 5 个全部标"磁盘已存在"；默认策略下 0 个任务、日志写明跳过 |
-| 切成"每次询问"后再点 | 弹重复确认框，只有 跳过/另存重下/取消；选"另存重下"得到 `… (2).zip`，原文件不变 |
+| 切成"每次询问"后再点 | 弹框：跳过 / 覆盖下载 / 取消；选“覆盖下载”会先删同名旧文件，再重新下发，不产生 `(2)` |
 | 删掉其中一个文件后重下 | 只有那 1 个需要下载 |
 | 清空 IDM 列表后 | 台账 + 磁盘仍然生效，不重复下载 |
 | 中途暂停 / 继续 | 不重复下发已完成项；暂停期间不发任何请求 |
@@ -561,7 +585,7 @@ node --check bridge\idm-history.js
 | 8 | 超大合集（1976 个 / 60GB） | 中 | 中 | 先展示总量与体积并二次确认；"仅非 optional"；分页渲染 |
 | 9 | 标签页关闭导致队列中断 | 高 | 中 | 持久化 + 恢复；面板顶部常驻提醒；P6 后台标签页 |
 | 10 | 桥接被本机其他页面滥用写文件 | 低 | 高 | 只允许 root 下单层 subdir；保持 `127.0.0.1`；不新增任意命令执行 |
-| 11 | 覆盖掉用户已有文件 | 低 | **高** | 设计上消灭：`onExisting` 只有 skip/rename；无删除、无覆盖分支；`(n)` 另存 |
+| 11 | 覆盖掉用户已有文件 | 低 | **高** | 同名文件默认不下载、不重命名；`replace` 只能由行内“重下”+确认触发 |
 | 12 | 面板与站点样式/事件冲突 | 中 | 中 | Shadow DOM + `all: initial`；只挂一个根节点；不改站点 DOM |
 | 13 | 节奏调得过快导致连续触发风控 | 中 | 高 | 默认值保守（bypass 同款）；P0-4 实测标定；冷却后自动降速（间隔 ×1.5 并写日志） |
 
@@ -573,16 +597,15 @@ node --check bridge\idm-history.js
 |---|---|---|
 | 1 | 根目录 | `I:\Program Files (x86)\Code\NexusDownloader\downloads\Collections`（桥接启动时自动创建） |
 | 2 | 子目录命名 | **带 slug**：`Worldly Improvements [vmu2j4]` |
-| 3 | 重复项 | 默认**跳过**；用户可切换为"每次询问"；**任何情况下都不覆盖**（重下只能另存 `(2)`） |
+| 3 | 重复项 | 默认**跳过**（不下载同名文件，不生成 `(2)`）；可切“每次询问”；覆盖只能由行内“重下”+确认触发 |
 | 4 | UI 形态 | 页面内**浮动面板**（Shadow DOM，和现有 toast 同一套隔离方式） |
 | 5 | 账号 | **免费账号** → 无 API 快路径，只走页面换链；节奏按 §6.1 保守取值 |
-| 6 | 下发方式 | **隔几秒下发一个**，前一个落盘（或超时）后才发下一个；参考 nexusmods-bypass 的默认节奏 |
+| 6 | 下发方式 | 固定间隔（默认 5s）+ 最大并发（默认 2），参考 nexusmods-bypass 的节奏；不按文件大小估算 |
 
 仍待确认（不影响开工）：
 
-1. 面板默认位置：右下角浮层（会和现有 toast 重叠区域——打算 toast 在上、面板在下）/ 左侧停靠？
-2. 默认节奏：先用 bypass 的 5s + 3.2MB/s 估算，还是要更慢（8s）？
-3. 合集更新出新 revision 时：新目录（默认）还是沿用同名目录（靠去重跳过已有文件）？
+1. 面板默认位置：右下角浮层（和现有 toast 会重叠区域）/ 左侧停靠？
+2. 合集更新出新 revision 时：新目录（默认）还是沿用同名目录（靠去重跳过已有文件）？
 
 ---
 

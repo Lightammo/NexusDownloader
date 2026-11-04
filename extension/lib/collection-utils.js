@@ -88,16 +88,6 @@
     return (size >= 100 ? size.toFixed(0) : size.toFixed(1)) + ' ' + units[unit];
   }
 
-  /** `archive.zip` -> `archive (2).zip`, used instead of ever overwriting. */
-  function withSuffix(filename, index) {
-    const n = Number(index);
-    if (!Number.isFinite(n) || n < 2) return filename;
-    const raw = text(filename);
-    const ext = (KEEP_EXT.exec(raw) || [])[1] || '';
-    const base = ext ? raw.slice(0, raw.length - ext.length) : raw;
-    return base + ' (' + Math.floor(n) + ')' + ext;
-  }
-
   // -------------------------------------------------------------------------
   // collection page
   // -------------------------------------------------------------------------
@@ -363,7 +353,6 @@
     sanitizeFilename,
     collectionFolderName,
     formatSize,
-    withSuffix,
     parseCollectionPath,
     collectionPageUrl,
     modFilePageUrl,

@@ -1,8 +1,9 @@
 # Nexus Downloader 开发文档
 
-> 适用版本：**v0.3.0**（extension / bridge 同版本）
+> 适用版本：**v0.3.1**（extension / bridge 同版本）
 > 最后更新：2026-11-04
 > 面向：维护者、二次开发、排查 Nexus 页面变化
+> 文档分工：README 负责安装、联调、排错、卸载；本文负责架构、接口、实现细节、测试与发布。
 
 ---
 
@@ -11,7 +12,7 @@
 把 Nexus Mods 的下载变成 IDM 里的下载任务：
 
 - 文件页点 **Manual download**：扩展在页面内取到该文件的签名 CDN 直链，交给 IDM；
-- 合集页（v0.3）：面板列出合集里全部 mod，多选后**逐个**换链接、限速下发、按集合名建子目录、三源去重。
+- 合集页（v0.3）：面板列出合集里全部 mod，多选后**限速**换链接、按并发上限下发、按集合名建子目录、三源去重。
 
 非目标（当前版本明确不做）：
 
@@ -28,13 +29,13 @@
 ```
 Chrome/Edge (MV3)
   content.js  ── 文件页：点击拦截、读 file_id、取签名链接
-  collection.js ── 合集页：浮层面板 + 队列（逐个换链接、节奏、限速、验证恢复）
+  collection.js ── 合集页：浮层面板 + 队列（限速换链接、并发上限、验证恢复）
         │ chrome.runtime.sendMessage
         ▼
   background.js ── 事件记录、GraphQL、去重检查、台账、转发桥接
         │ fetch http://127.0.0.1:38765
         ▼
-  bridge/server.js ── 校验 URL/子目录、同名跳过或另存、拼 IDM 命令行
+  bridge/server.js ── 校验 URL/子目录、同名跳过（显式重下才覆盖）、拼 IDM 命令行
   bridge/idm-history.js ── 只读解析 IDM 注册表 + DwnlData 日志
         │ spawn IDMan.exe /n /d ... /p ... [/f ...]
         ▼
@@ -110,7 +111,8 @@ Chrome/Edge (MV3)
 | | `sanitizeSegment` / `sanitizeFilename` | 桥接与扩展共用的 Windows 命名规则 |
 | | `collectionFolderName` | `<合集名> [<slug>]` |
 | | `matchIdmRecord` / `extractCdnIdentity` | IDM 历史匹配（原始文件名 / UUID / `h`） |
-| `extension/lib/queue-pacing.js` | `computePauseMs` | 2s 下限、`大小/3.2MB/s + 5s`、180s 上限、隐藏标签页 ×3 |
+| `extension/lib/queue-pacing.js` | `computeGapMs` | 固定下发间隔（默认 5s，2s 下限），隐藏标签页 ×3；不做大小/速度估算 |
+| | `normalizeConcurrent` / `diskWaitMs` | 并发上限归一化（1–5）；下发后 8s 快速落盘观察 |
 | | `retryDelayMs` / `nextCooldown` | 1.5s→30s 等量抖动；30s→600s 共享冷却 |
 | `extension/collection.js` | `loadCollection` / `runPreflight` | 拉列表、三源去重、恢复作业 |
 | | `startQueue` / `processItem` | 队列主循环、单条下发、落盘确认 |
@@ -140,6 +142,11 @@ Chrome/Edge (MV3)
 | `tools/test-host.js` | 测试实验性 Native Host |
 | `tools/test-nexus-utils.js` | 解析纯函数单测，当前 17 项 |
 | `native-host/` | 实验性原生宿主；IDM 6.42 上由原生宿主链启动会忽略命令行，故默认走桥接 |
+
+> **为什么默认不用 Native Messaging**：`native-host/` 已实现并通过 Chrome/Edge 的握手与 ping 测试，
+> 但在本机 IDM 6.42b63 上，由 Chrome 原生宿主进程链启动的 `IDMan.exe` 会**静默忽略命令行参数**；
+> 同样的参数从普通 Node 进程调用则正常。因此扩展默认走 `127.0.0.1:38765` 的本地桥接，
+> 原生宿主代码保留作参考/调试，不参与安装主流程。
 
 ---
 
@@ -274,19 +281,30 @@ query CollectionRevision($slug, $domainName, $revision, $adult)
 
 | 参数 | 默认 | 说明 |
 |---|---|---|
-| 两条之间硬下限 | 2000ms | 跳过/失败也等 |
-| 额外等待 | 5s（0–600） | 用户可改 |
-| 传输估算 | `sizeMB / 3.2MB/s` | 只用于等待 |
-| 单次等待上限 | 180s | |
-| 落盘等待 | `min(pause*3, 180s)` | 轮询 `/check`，等到文件出现再继续 |
+| 下发间隔 | 5s（0–600） | 固定间隔，不再按文件大小估算；0 时仍受 2s 下限约束 |
+| 间隔下限 | 2000ms | 跳过/失败也等 |
+| 最大同时下载 | 2（1–5） | 已下发但未落盘的文件数上限；到上限就等对账释放名额 |
+| 下发后快速观察 | 8s | 只看一眼是否已落盘，没看到就交给对账 |
 | 重试 | 3 次，1.5s→30s 等量抖动 | 单个文件 |
 | 限速冷却 | 30s→600s，最多 6 次，跨标签共享 | `Retry-After` 优先 |
-| 隐藏标签页 | 等待 ×3 | 防后台节流后连发 |
+| 隐藏标签页 | 间隔 ×3 | 防后台节流后连发 |
 | 小文件优先 | 开 | |
 | 批次确认 | >50 个文件 | |
 
 遇到挑战：队列停在该文件（不跳过、不推进），打开该 mod 的页面（不带 `file_id`）让用户过验证，
 同源 `HEAD` 探针每 5s 递增到 30s 检测恢复，通过后从同一条继续；30 分钟未恢复则停止。
+
+**完成判定（磁盘是唯一真相）**：IDM 没有可用的状态接口，而且它可能在自己的队列里排几十秒才把文件
+移到目标目录。所以完成状态不看 IDM 日志/注册表，而是：
+
+1. 下发后先快速轮询 `/check` 最多 8 秒（小文件通常这时已经落盘）；
+2. 没落盘就记 `sent` + `sentAt` + 实际文件名，**不判失败**；
+3. 面板每 5 秒把所有 `sent` 项的名字合并成**一次** `/check`，出现即转 `done`；页面重新打开时也先同步一次，
+   所以“上次显示未完成、其实已经下完”会被自动纠正；
+4. 超过 2 小时仍未出现才转 `failed`（可重试），避免 IDM 长队列被误判。
+
+IDM 历史（注册表 / 日志）只用于**去重**（“这个文件以前下过吗，可能在别的目录”），每次预检读一次、缓存 60 秒，
+不参与完成状态判定。
 
 ### 4.9 去重
 
@@ -298,8 +316,39 @@ query CollectionRevision($slug, $domainName, $revision, $adult)
 3. **IDM 注册表**：`HKCU\Software\DownloadManager\<id>` 的 `Url0` / `FR_FNCD`；
 4. **IDM 日志**：`%APPDATA%\IDM\DwnlData\<user>\<slug>_<n>\*.log` 的 `Url` 与 `Content-Disposition`。
 
-默认策略 `skip`（重复项不勾选），可切 `ask`（弹框）。**永不覆盖**：桥接只接受
-`onExisting: skip | rename`，`rename` 落成 `name (2).ext`；没有删除/覆盖分支。
+默认策略 `skip`（重复项不勾选、不下发），可切 `ask`（开始前弹框，可选“跳过”或“覆盖下载”）。
+桥接只接受 `onExisting: skip | replace`：`skip` 直接返回 `skipped:'disk'`，**不会生成 `(2)` 文件名**；
+`replace` 只在用户明确确认后发送（重复项对话框的“覆盖下载”，或行内“重下”），桥接先删同名旧文件再让 IDM 下载。
+
+### 4.10 一键下载的实现细节
+
+`content.js` 在 `window` 的捕获阶段监听 `click` / `auxclick`，用 `event.composedPath()` 而不是
+`event.target`（后者会被 shadow DOM 重定向到 host）。只拦截 Nexus 的下载按钮：
+
+- 按按钮文案匹配 `Manual download`、`Slow download`、`Fast download` 等（`classifyDownloadLabel`）；
+- 放行 Vortex / Mod manager（`action-vortex`、`action-nmm`）、`nxm://`、`?nmm=1`；
+- 带 Ctrl / Cmd / Shift / Alt 的点击放行，保留浏览器“新标签打开”的行为；
+- 扩展自己的 toast / 合集面板内的点击不处理。
+
+命中后：
+
+1. 立刻 `preventDefault()` + `stopImmediatePropagation()`，站点不会再打开下载页；
+2. 从按钮所在或同级的 `<mod-file-download file="…" download-url="…">`、
+   `<mod-download-buttons main-file="…">`、`mod-download-modal`、`#next-shadow-root`
+   读取文件 JSON，也读 `file-id` / `data-file-id` / `data-id`；
+3. `uid` 先按 `uid % 2^32` 还原成真正的 `file_id`（见 §4.2）；
+4. 直链按 §4.3 的优先级解析；页面数据里已有 `nexus-cdn.com` 链接就直接用；
+5. 页面顶部只有 mod 信息、没有 `file_id` 的 Manual download：后台用
+   `modFiles(gameId, modId)` 查主文件（`primary=1` / `category=MAIN`），并在 toast 里标“（主文件）”；
+6. 文件名优先用文件 JSON 的 `fileName` / `file_name` / `uri` 等字段；没有时用 GraphQL 的
+   `name + detectedFileExtension`；再取不到就不强传 `/f`，让 IDM 按 `Content-Disposition` 命名；
+7. 直链和文件名经 `nd:clickDownload` 交给 background → 桥接 → IDM。
+
+解析失败时 toast 给出“打开下载页”，URL 带 `nd_auto=1`；该页面加载后 content.js 会自动再试一次，
+成功后用 `history.replaceState` 去掉 `nd_auto`，避免刷新重复触发。
+
+文件名的一个常见坑：Nexus 很多 CDN 链接以 UUID 结尾而不是文件名；如果桥接强行 `/f` 一个 UUID，
+落盘文件会没有扩展名。因此 v0.2 起桥接只在有可信文件名时才加 `/f`（见 §6.3）。
 
 ---
 
@@ -315,8 +364,8 @@ query CollectionRevision($slug, $domainName, $revision, $adult)
 | `clickDownload` | `true` | 点 Manual download 直接下载 |
 | `autoIntercept` | `true` | 兜底拦截浏览器发起的 Nexus 下载 |
 | `devAllDownloads` | `false` | 开发用：拦截所有下载 |
-| `collectionPauseSeconds` | `5` | 合集：每次下发后的额外等待（0–600） |
-| `collectionAssumedSpeedMBps` | `3.2` | 合集：传输估算速度（0.1–1000） |
+| `collectionPauseSeconds` | `5` | 合集：两次下发之间的间隔秒数（0–600，实际不低于 2s） |
+| `collectionMaxConcurrent` | `2` | 合集：最多同时有几个文件已下发未落盘（1–5） |
 | `collectionDuplicatePolicy` | `'skip'` | 合集：重复项 `skip` / `ask` |
 | `collectionUseIdmHistory` | `true` | 合集：把 IDM 历史算作重复 |
 | `collectionSmallestFirst` | `true` | 合集：小文件先下 |
@@ -399,14 +448,15 @@ query CollectionRevision($slug, $domainName, $revision, $adult)
 | 方法 | 路径 | Body | 返回 |
 |---|---|---|---|
 | `GET` | `/ping` | — | `{ ok, bridge, idmPath, idmExists, downloadDir, collectionRoot, … }` |
-| `POST` | `/download` | `{ url, filename?, referrer?, source?, subdir?, onExisting?: 'skip'\|'rename' }` | `{ ok, id, filename, dir, skipped?:'disk', command }` |
+| `POST` | `/download` | `{ url, filename?, referrer?, source?, subdir?, onExisting?: 'skip'\|'replace' }` | `{ ok, id, filename, dir, skipped?:'disk', command }` |
 | `POST` | `/check` | `{ subdir?, names: [] }` | `{ ok, dir, exists, files: { name: { exists, size, mtimeMs } } }` |
 | `POST` | `/idmHistory` | `{ force? }` | `{ ok, records: [], counts, error }` |
 | `POST` | `/openFolder` | `{ subdir? }` | `{ ok, dir }` |
 
 `subdir` 只接受 `collectionRoot` 下的相对路径（1–3 段、无盘符/UNC/`..`，且每段必须等于
 `sanitizeSegment()` 的结果），最终 `path.resolve` 必须仍在 root 之下。
-`onExisting` 默认 `skip`；`rename` 才会落成 `name (2).ext`。**桥接没有覆盖分支。**
+`onExisting` 默认 `skip`（同名文件直接返回，不下载、不重命名）；`replace` 会先删同名旧文件再下载，
+只在用户明确确认后发送（重复项对话框的“覆盖下载”，或行内“重下”）。**桥接没有生成 `(2)` 文件名的代码路径。**
 
 CORS：`*`；支持 `Access-Control-Allow-Private-Network: true`；OPTIONS 返回 204。
 
@@ -427,9 +477,9 @@ CORS：`*`；支持 `Access-Control-Allow-Private-Network: true`；OPTIONS 返�
 ```
 
 - `allowedHosts` 匹配域名及其子域名。
-- `collectionRoot` 缺省为 `<downloadDir>/Collections`。
+- `collectionRoot` 缺省为仓库下的 `downloads/Collections`（注意：不是由 `downloadDir` 推导）；建议显式配置。
 - `NEXUS_BRIDGE_ALLOW_ANY=1` 可临时放开任意域名。
-- `NEXUS_BRIDGE_PORT` 可改端口（扩展写死 38765，一般不改）。
+- `NEXUS_BRIDGE_PORT` 可改端口（扩展写死 38765，一般不改）。改端口要同时改 `extension/background.js` 的 `BRIDGE_URL` 和 `extension/manifest.json` 的 `host_permissions`，并重新加载扩展。
 - `NEXUS_BRIDGE_DRY_RUN=1` / `NEXUS_BRIDGE_COLLECTION_ROOT=…` 仅测试用。
 - `NEXUS_BRIDGE_DEBUG=1` 把日志同时写到 stderr。
 - 改配置后必须重启桥接进程。
@@ -450,6 +500,21 @@ IDMan.exe /n /d <url> /p <downloadDir> [/f <filename>]
 - 任何本机页面理论上都可以 POST 到该端口；`allowedHosts` 是唯一限制。
 - 不要把端口暴露到局域网/公网，也不要在桥接里加入任意命令执行。
 - 签名 CDN 链接有时效，桥接只负责转交，不持久化 URL。
+
+### 6.5 IDM 弹窗设置（`tools/configure-idm.ps1`）
+
+IDM 6.42 的 `/n` 只能让主窗口静默，**不会**覆盖“开始下载确认 / 下载完成提示”。不关掉的话，
+桥接日志里已经有 `spawned`，但 IDM 会停在弹窗等用户点确认，表现为“交给 IDM 了但文件不出现”。
+
+`tools/configure-idm.ps1` 会先备份原值到 `tools/idm-settings-backup.json`，再写：
+
+| HKCU `Software\DownloadManager` | 新值 | 作用 |
+|---|---|---|
+| `StartDlgShowing` | `0` | 不显示“开始下载”对话框 |
+| `ComplDlgShowing` | `0` | 不显示“下载完成”提示 |
+| `startImmediately` | `1` | 命令行任务立即开始 |
+
+运行后，如果 IDM 在脚本默认路径，它会重启 IDM 让设置生效。`tools/restore-idm.ps1` 按备份还原；两个脚本都只改当前用户，不需要管理员权限。
 
 ---
 
@@ -483,15 +548,15 @@ IDMan.exe /n /d <url> /p <downloadDir> [/f <filename>]
 
 | 能力 | bypass | 本项目 | 影响 |
 |---|---|---|---|
-| Collections 批量队列 | ✅ | ✅（v0.3） | 逐个换链接 + 节奏；不做 Vortex 交接 |
-| 队列限速 / 断点 / 历史 | ✅ | ❌ | 不做 |
+| Collections 批量队列 | ✅ | ✅（v0.3） | 限速换链接 + 并发上限；不做 Vortex 交接 |
+| 队列限速 / 断点 / 历史 | ✅ | 部分 | 合集有限速、断点续跑、IDM 历史去重；没有独立的下载历史面板 |
 | Vortex / `nxm://` 交接 | ✅ | ❌ | 不做；目标是 IDM |
 | 大文件 Standard / Resumable chooser | ✅ | ❌ | >500MB 且生成失败时可能停在 chooser |
 | Requirements gate 主动跳过 | ✅ | 部分 | 只读 widget / 拦 modal 按钮 |
 | Page shield / 广告拦截导致按钮失效 | ✅ | ❌ | 广告拦截插件可能让页面按钮不可用 |
 | 官方 Nexus API | ✅ | ❌ | 当前只用 GraphQL + 页面 |
 | 类型化错误 / 重试 / 报告 | 强 | 基础 | 失败提示和诊断较简单 |
-| 免费账号 pacing | ✅ | ❌ | 连续点击可能触发 Nexus 限制 |
+| 免费账号 pacing | ✅ | 部分 | 合集主动限速；单文件仍按点击触发，连续点击可能触发限制 |
 | 13 语言 UI / 隐藏广告位 | ✅ | ❌ | 非功能优先 |
 | MO2 `.meta` | ✅ | ❌ | 不做 |
 | 严格 CDN 内容校验 | 部分 | 部分 | 我们校验 API 路由 uid，不校验 CDN 内容 |
@@ -509,6 +574,9 @@ IDMan.exe /n /d <url> /p <downloadDir> [/f <filename>]
 ---
 
 ## 8. 开发工作流
+
+开发环境：Windows 10/11、Node.js 18+（实测 24.9.0）、Chromium 109+、IDM 6.x（实测 6.42b63）、
+PowerShell 5.1。完整的组件安装与联调步骤见 [README](../README.md)；本节只列开发循环。
 
 无构建步骤，纯 JS：
 
@@ -543,7 +611,7 @@ node --check bridge\server.js
 node --check bridge\idm-history.js
 ```
 
-当前单测：`test-nexus-utils` 17 项、`test-collection-utils` 22 项、`test-queue-pacing` 14 项、
+当前单测：`test-nexus-utils` 17 项、`test-collection-utils` 22 项、`test-queue-pacing` 11 项、
 `test-idm-history` 8 项。`print-collection.js` 只依赖公开 GraphQL，是"schema 变了"的哨兵。
 
 ### 9.2 手动回归矩阵
@@ -561,8 +629,9 @@ node --check bridge\idm-history.js
 | 文件名未知 | IDM 用 Content-Disposition；旧桥接可能给 UUID |
 | IDM 开始/完成弹窗 | 运行 `configure-idm.ps1` 后无弹窗 |
 | 合集页打开面板 | 列出全部 mod，大小/版本正确，不可下载项标注原因 |
-| 合集单选 / 全选 | 逐个下发，任意两条间隔 ≥2s，且前一个落盘后才发下一个 |
-| 合集重复项 | 默认不勾选；勾选后落成 `(2)`，原文件不动 |
+| 合集单选 / 全选 | 按间隔下发（≥2s），待落盘数不超过并发上限 |
+| 合集重复项 | 默认不勾选、也不下发；不生成 `(2)` 文件；点行内“重下”确认后才覆盖 |
+| 合集并发 | 把并发设为 1 / 3 分别验证：待落盘数量不超过设置 |
 | 合集刷新页面 | 提示恢复进度，已完成项不重下 |
 | 合集遇到 429 | 全体冷却倒计时，结束后自动继续 |
 | 合集遇到验证 | 停在该条 + 打开验证页，通过后自动续跑 |
@@ -581,7 +650,7 @@ node --check bridge\idm-history.js
 | 合集面板提示「桥接版本过旧」 | 结束旧的 `node bridge/server.js`，重新 `bridge\start.ps1`，刷新页面 |
 | 合集列表读不到 | `node tools\print-collection.js <game> <slug>`；成人内容要传 `viewAdultContent` |
 | 合集项显示不可下载 | `file` 为空（外部来源）或 `category=REMOVED`；Nexus 上确实没了 |
-| 合集停在「限速冷却」 | 429；等冷却结束，或把面板里的“额外等待”调大 |
+| 合集停在「限速冷却」 | 429；等冷却结束，或把面板里的“下发间隔”调大、降低“最大同时下载数” |
 | 合集要求人机验证 | 在自动打开的 mod 页完成验证；通过后自动继续，30 分钟未通过会停 |
 | IDM 没开始 | IDM 弹窗设置、IDM Integration Module 是否抢下载 |
 | 页面按钮无反应 | 广告拦截/页面脚本报错；看 F12 Console |
@@ -614,7 +683,29 @@ node --check bridge\idm-history.js
 
 ---
 
-## 12. 许可证与参考
+## 12. 已知限制（实现层面）
+
+| # | 限制 | 影响 / 处理 |
+|---|---|---|
+| 1 | IDM 没有可用的状态查询接口 | 完成判定以磁盘文件为准（§4.8）；`sent` 超过 2 小时仍未出现才判失败 |
+| 2 | IDM 可能跳过相同 URL 的重复下载 | Nexus 每次生成的链接通常唯一；重复项优先靠扩展的三源去重 |
+| 3 | 桥接无鉴权，只监听 `127.0.0.1` | 任何本机页面理论上都能 POST；`allowedHosts` 是唯一限制，不要暴露端口 |
+| 4 | 扩展 ID 由 `manifest.json` 的 `key` 固定 | 改 key 后必须重跑 `native-host/install.ps1` 更新 `allowed_origins`；桥接方式不受影响 |
+| 5 | content script 只注入顶层 frame，`document_start` | Nexus 下载控件目前都在顶层；若站点改到 iframe，需要加 `all_frames` 并重新验证 |
+| 6 | 扩展“重新加载”不会向已打开页面重新注入脚本 | 必须刷新 Nexus 页面 |
+| 7 | MV3 service worker 会休眠 | `recent` 去重 Map 只存在内存；持久状态必须写 `chrome.storage.local` |
+| 8 | 合集队列在 content script 里 | 关闭合集标签页会停止队列；重开会恢复进度，点“继续”继续 |
+| 9 | Nexus 免费账号有下载间隔/频率限制 | 合集已主动限速；单文件连续点击仍可能触发 429，等一会儿再试 |
+| 10 | Cloudflare 验证无法由扩展代替 | 合集停在该条并打开 mod 页；单文件提示刷新页面完成验证 |
+| 11 | 合集列表依赖 `api.nexusmods.com/v2/graphql`（官方标注 WIP） | 字段变化会读不到列表；`node tools/print-collection.js <game> <slug>` 可快速定位 |
+| 12 | 合集面板只出现在 `/games/<game>/collections/<slug>` | 文件页仍走一键下载逻辑 |
+| 13 | 合集下载受免费账号 + 间隔下发限制 | 每 5s 一个链接（可调），并发默认 2；100 个 mod 约 8–10 分钟下发完，实际完成看网速 |
+| 14 | 原生宿主在 IDM 6.42 上不可靠 | 由原生宿主链启动的 IDM 会忽略命令行；默认走桥接 |
+| 15 | 部分 Nexus CDN 链接以 UUID 结尾 | 无文件名时不传 `/f`，让 IDM 按 `Content-Disposition` 命名；旧桥接可能落成无扩展名文件 |
+
+---
+
+## 13. 许可证与参考
 
 - 本项目：MIT，见 `LICENSE`。
 - 参考实现：[thomasthanos/nexusmods-bypass](https://github.com/thomasthanos/nexusmods-bypass)。

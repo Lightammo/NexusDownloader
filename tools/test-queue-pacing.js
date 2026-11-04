@@ -23,45 +23,38 @@ function test(name, fn) {
   }
 }
 
-test('defaults mirror the bypass pacing numbers', () => {
+test('defaults are a plain interval plus a concurrency cap', () => {
+  assert.equal(P.DEFAULTS.gapSeconds, 5);
   assert.equal(P.DEFAULTS.minGapMs, 2000);
-  assert.equal(P.DEFAULTS.pauseSeconds, 5);
-  assert.equal(P.DEFAULTS.assumedSpeedMBps, 3.2);
-  assert.equal(P.DEFAULTS.maxPauseMs, 180000);
-  assert.equal(P.DEFAULTS.rateLimitBaseSeconds, 30);
-  assert.equal(P.DEFAULTS.rateLimitMaxSeconds, 600);
+  assert.equal(P.DEFAULTS.maxConcurrent, 2);
+  assert.equal('assumedSpeedMBps' in P.DEFAULTS, false, 'no speed estimate anymore');
 });
 
-test('small files just take the extra pause', () => {
-  const ms = P.computePauseMs(138);
-  assert.ok(ms >= 5000 && ms < 5200, 'got ' + ms);
+test('the gap is exactly the configured number of seconds', () => {
+  assert.equal(P.computeGapMs({}), 5000);
+  assert.equal(P.computeGapMs({ gapSeconds: 0 }), 2000, 'never below the 2s floor');
+  assert.equal(P.computeGapMs({ gapSeconds: 3 }), 3000);
+  assert.equal(P.computeGapMs({ gapSeconds: 12.5 }), 12500);
+  assert.equal(P.computeGapMs({ gapSeconds: '8' }), 8000);
 });
 
-test('bigger files add their estimated transfer time', () => {
-  // 100 MB at 3.2 MB/s = 31.25 s, plus 5 s.
-  const ms = P.computePauseMs(100 * 1024);
-  assert.ok(ms >= 36000 && ms <= 36500, 'got ' + ms);
+test('the gap is capped and slowed down in a hidden tab', () => {
+  assert.equal(P.computeGapMs({ gapSeconds: 99999 }), P.DEFAULTS.maxGapMs);
+  assert.equal(P.computeGapMs({ gapSeconds: 5, hidden: true }), 15000);
 });
 
-test('a huge file is capped at maxPauseMs', () => {
-  const ms = P.computePauseMs(10 * 1024 * 1024);
-  assert.equal(ms, 180000);
+test('a file only gets the short fast-path watch', () => {
+  assert.equal(P.diskWaitMs({}), 8000);
+  assert.equal(P.diskWaitMs({ fastDiskWaitMs: 500 }), 1000, 'never below 1s');
 });
 
-test('unknown size only waits the floor + pause', () => {
-  assert.equal(P.computePauseMs(0), 5000);
-  assert.equal(P.computePauseMs(undefined), 5000);
-});
-
-test('a hidden tab slows the queue down', () => {
-  const visible = P.computePauseMs(138);
-  const hidden = P.computePauseMs(138, { hidden: true });
-  assert.equal(hidden, visible * 3);
-});
-
-test('pause is never below the hard floor', () => {
-  const ms = P.computePauseMs(10, { pauseSeconds: 0 });
-  assert.equal(ms, 2000);
+test('concurrency is clamped to 1..5', () => {
+  assert.equal(P.normalizeConcurrent(0), 1);
+  assert.equal(P.normalizeConcurrent(1), 1);
+  assert.equal(P.normalizeConcurrent(3), 3);
+  assert.equal(P.normalizeConcurrent('2'), 2);
+  assert.equal(P.normalizeConcurrent(99), 5);
+  assert.equal(P.normalizeConcurrent('abc'), 1);
 });
 
 test('retryDelayMs uses equal jitter and a 30s ceiling', () => {
@@ -104,12 +97,6 @@ test('cooldownSecondsLeft rounds up and never goes negative', () => {
   assert.equal(P.cooldownSecondsLeft(10000, 1000), 9);
   assert.equal(P.cooldownSecondsLeft(1000, 10000), 0);
   assert.equal(P.cooldownSecondsLeft(0, 0), 0);
-});
-
-test('diskWaitMs watches for about three pauses, capped', () => {
-  assert.equal(P.diskWaitMs(5000), 15000);
-  assert.equal(P.diskWaitMs(20000), 60000, '3x the pause');
-  assert.equal(P.diskWaitMs(100000), 180000, 'capped at maxDiskWaitMs');
 });
 
 test('nextStrike is capped at rateLimitMaxStrikes', () => {

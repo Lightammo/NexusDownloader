@@ -107,10 +107,8 @@ test('collectionFolderName appends the slug by default', () => {
   assert.equal(C.collectionFolderName({ name: 'A/B:C', slug: 'x1' }), 'A_B_C [x1]');
 });
 
-test('withSuffix produces (2), (3) renames instead of overwriting', () => {
-  assert.equal(C.withSuffix('Clarity 1.7-3004-1-7.rar', 2), 'Clarity 1.7-3004-1-7 (2).rar');
-  assert.equal(C.withSuffix('archive.zip', 1), 'archive.zip');
-  assert.equal(C.withSuffix('noext', 3), 'noext (3)');
+test('duplicate names are never renamed to (2) - the queue skips them instead', () => {
+  assert.equal(typeof C.withSuffix, 'undefined');
 });
 
 test('formatSize is human readable', () => {

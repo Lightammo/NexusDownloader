@@ -16,7 +16,7 @@ const { spawn } = require('child_process');
 const Collection = require('../extension/lib/collection-utils.js');
 const idmHistory = require('./idm-history.js');
 
-const VERSION = '0.3.0';
+const VERSION = '0.3.1';
 const ROOT = __dirname;
 const CONFIG_PATH = path.join(ROOT, '..', 'native-host', 'config.json');
 const LOG_FILE = path.join(ROOT, 'bridge.log');
@@ -113,16 +113,11 @@ function resolveSubdir(subdir) {
   return dir;
 }
 
-/** Never overwrite: pick `name (2).ext`, `name (3).ext`, ... */
-function uniqueFilename(dir, filename) {
-  if (!fs.existsSync(path.join(dir, filename))) return filename;
-  for (let index = 2; index < 1000; index += 1) {
-    const candidate = Collection.withSuffix(filename, index);
-    if (!fs.existsSync(path.join(dir, candidate))) return candidate;
-  }
-  throw new Error('too many copies of ' + filename);
-}
-
+/**
+ * A file name must never be downloaded twice by accident: a second copy would
+ * either overwrite the first or litter the folder with `(2)` names. Duplicates
+ * are skipped unless the caller explicitly asks to replace the existing file.
+ */
 function fileInfo(dir, filename) {
   try {
     const stat = fs.statSync(path.join(dir, filename));
@@ -210,26 +205,28 @@ function download(input) {
   const dir = resolveSubdir(input.subdir);
   fs.mkdirSync(dir, { recursive: true });
 
-  // "Never overwrite" is enforced here, not just in the UI: skip by default,
-  // rename when the user explicitly asked to download again.
-  const onExisting = input.onExisting === 'rename' ? 'rename' : 'skip';
-  let filename = baseName;
-  let skipped = '';
-  if (baseName && fs.existsSync(path.join(dir, baseName))) {
-    if (onExisting === 'skip') {
-      skipped = 'disk';
-      log({ event: 'skip-existing', id, filename: baseName, dir, subdir: input.subdir || '' });
-      return { ok: true, id, skipped, filename: baseName, dir };
-    }
-    filename = uniqueFilename(dir, baseName);
+  // Duplicates are never downloaded twice. `replace` is only sent after the
+  // user explicitly confirmed "overwrite this file" in the panel: the old file
+  // is removed at the last moment, so a missing IDM cannot destroy it.
+  const onExisting = input.onExisting === 'replace' ? 'replace' : 'skip';
+  const filename = baseName;
+  const targetPath = filename ? path.join(dir, filename) : '';
+  const exists = targetPath ? fs.existsSync(targetPath) : false;
+  if (exists && onExisting !== 'replace') {
+    log({ event: 'skip-existing', id, filename, dir, subdir: input.subdir || '' });
+    return { ok: true, id, skipped: 'disk', filename, dir };
   }
 
   if (config.dryRun) {
-    log({ event: 'dry-run', id, url: parsed.toString(), filename: filename || null, dir });
+    log({ event: 'dry-run', id, url: parsed.toString(), filename: filename || null, dir, replace: exists && onExisting === 'replace' });
     return { ok: true, id, dryRun: true, filename: filename || null, dir };
   }
   if (!fs.existsSync(config.idmPath)) {
     throw new Error('IDM executable not found: ' + config.idmPath);
+  }
+  if (exists && onExisting === 'replace') {
+    log({ event: 'replace-existing', id, filename, dir, subdir: input.subdir || '' });
+    fs.rmSync(targetPath, { force: true });
   }
 
   const args = [];

@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Nexus Downloader (IDM Bridge)",
-  "version": "0.3.0",
-  "description": "把 Nexus Mods 的下载交给 IDM：文件页一键下载，合集页批量下载（逐个限速下发，绝不覆盖已有文件）。",
+  "version": "0.3.1",
+  "description": "把 Nexus Mods 的下载交给 IDM：文件页一键下载，合集页按间隔+并发批量下载（同名文件不重复下载）。",
   "minimum_chrome_version": "109",
   "permissions": [
     "downloads",

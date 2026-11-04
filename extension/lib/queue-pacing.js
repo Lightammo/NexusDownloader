@@ -3,11 +3,18 @@
 /**
  * Nexus Downloader - pacing maths for the Collections queue.
  *
- * Pure functions only: the queue asks these "how long do I wait before the next
- * request", the tests pin the numbers. The defaults mirror what the
- * nexusmods-bypass extension uses for its collection queue (2s floor, 5s extra
- * pause, size/3.2MB/s transfer estimate, 30s->10min shared cooldown, 1.5s->30s
- * retry backoff with equal jitter). We only reuse the behaviour, not its code.
+ * Pure functions only. The queue asks "how long until the next hand-off" and
+ * "how many files may be in flight at once"; the tests pin the numbers.
+ *
+ * Deliberately no size/speed estimate: a collection archive's transfer time
+ * depends on the connection, IDM's queue and the CDN, so guessing it produced
+ * both meaningless settings and wrong "still downloading" judgements. The
+ * dispatch interval is a plain number of seconds, and completion is decided by
+ * the file appearing on disk (see collection.js), not by a timer.
+ *
+ * Rate-limit and retry numbers still mirror the nexusmods-bypass queue (30s ->
+ * 10min shared cooldown, 1.5s -> 30s retry with equal jitter): we reuse the
+ * behaviour, not its code.
  */
 (function (root, factory) {
   const api = factory();
@@ -17,19 +24,22 @@
   'use strict';
 
   const DEFAULTS = Object.freeze({
-    // Hard floor between two requests, even for skipped/failed rows.
+    // Interval between two hand-offs, in seconds. 0 means "as fast as the
+    // concurrency limit allows", but never below minGapMs.
+    gapSeconds: 5,
+    // Hard floor between two hand-offs.
     minGapMs: 2000,
-    // Extra rest after each hand-off.
-    pauseSeconds: 5,
-    // Used only to estimate how long a file takes; never throttles IDM.
-    assumedSpeedMBps: 3.2,
-    // A single pause never exceeds this.
-    maxPauseMs: 180000,
-    // Hidden tabs get background timer throttling; slow down so the queue does
-    // not burst when the tab wakes up.
+    maxGapMs: 10 * 60 * 1000,
+    // Hidden tabs get background timer throttling; space hand-offs out more so
+    // the queue does not burst when the tab wakes up.
     hiddenMultiplier: 3,
-    // Give up waiting for a file to appear on disk after this.
-    maxDiskWaitMs: 180000,
+    // How many files may be handed to IDM but not seen on disk yet.
+    maxConcurrent: 2,
+    minConcurrent: 1,
+    maxConcurrentLimit: 5,
+    // Fast path after a hand-off: watch the folder briefly for the file, then
+    // leave the rest to the reconciler.
+    fastDiskWaitMs: 8000,
     // Exponential backoff for a single file.
     retryBaseMs: 1500,
     retryMaxMs: 30000,
@@ -50,21 +60,24 @@
     return Math.min(Math.max(number, min), max);
   }
 
-  /**
-   * How long to wait after handing file N to IDM before asking Nexus for file
-   * N+1's link. Small files: the 5s pause. Large files: roughly their transfer
-   * time plus the pause, capped so one huge archive cannot stall the queue.
-   */
-  function computePauseMs(sizeKb, overrides) {
+  /** Interval before the next hand-off. */
+  function computeGapMs(overrides) {
     const o = settings(overrides);
-    const kb = Number(sizeKb);
-    const megabytes = Number.isFinite(kb) && kb > 0 ? kb / 1024 : 0;
-    const speed = Number(o.assumedSpeedMBps) > 0 ? Number(o.assumedSpeedMBps) : DEFAULTS.assumedSpeedMBps;
-    const transferMs = (megabytes / speed) * 1000;
-    const extraMs = Math.max(0, Number(o.pauseSeconds) || 0) * 1000;
-    let pause = clamp(transferMs + extraMs, o.minGapMs, o.maxPauseMs);
-    if (o.hidden) pause = Math.min(pause * Math.max(1, o.hiddenMultiplier), o.maxPauseMs * Math.max(1, o.hiddenMultiplier));
-    return Math.round(pause);
+    const seconds = Number(o.gapSeconds);
+    const base = clamp((Number.isFinite(seconds) ? seconds : DEFAULTS.gapSeconds) * 1000, o.minGapMs, o.maxGapMs);
+    if (!o.hidden) return Math.round(base);
+    return Math.round(Math.min(base * Math.max(1, o.hiddenMultiplier), o.maxGapMs * Math.max(1, o.hiddenMultiplier)));
+  }
+
+  /** How long the queue waits for a just-handed file before moving on. */
+  function diskWaitMs(overrides) {
+    const o = settings(overrides);
+    return Math.round(clamp(o.fastDiskWaitMs, 1000, o.maxGapMs));
+  }
+
+  /** Keep the concurrency setting in a sane range. */
+  function normalizeConcurrent(value) {
+    return Math.round(clamp(value, DEFAULTS.minConcurrent, DEFAULTS.maxConcurrentLimit));
   }
 
   /** Exponential backoff with equal jitter, so tabs do not retry in lockstep. */
@@ -111,13 +124,6 @@
     return Math.max(0, Math.ceil(((Number(until) || 0) - now) / 1000));
   }
 
-  /** How long to watch the target folder for the file we just handed over. */
-  function diskWaitMs(pauseMs, overrides) {
-    const o = settings(overrides);
-    const pause = Number(pauseMs) > 0 ? Number(pauseMs) : o.minGapMs;
-    return Math.round(Math.min(pause * 3, o.maxDiskWaitMs));
-  }
-
   function nextStrike(strike, overrides) {
     const o = settings(overrides);
     return Math.min((Number(strike) || 0) + 1, o.rateLimitMaxStrikes);
@@ -127,12 +133,13 @@
     DEFAULTS,
     settings,
     clamp,
-    computePauseMs,
+    computeGapMs,
+    diskWaitMs,
+    normalizeConcurrent,
     retryDelayMs,
     parseRetryAfterSeconds,
     nextCooldown,
     cooldownSecondsLeft,
-    diskWaitMs,
     nextStrike
   };
 });

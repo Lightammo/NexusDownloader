@@ -379,7 +379,9 @@ async function collectionSend(input) {
   const url = String((input && input.url) || '');
   const filename = String((input && input.filename) || '');
   const subdir = String((input && input.subdir) || '');
-  const onExisting = input && input.onExisting === 'rename' ? 'rename' : 'skip';
+  // Only an explicit "overwrite this file" from the panel sends 'replace';
+  // everything else is a skip, so a duplicate name is never downloaded twice.
+  const onExisting = input && input.onExisting === 'replace' ? 'replace' : 'skip';
 
   const response = await callBridge('/download', {
     url,
