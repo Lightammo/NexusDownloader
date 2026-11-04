@@ -18,6 +18,10 @@ Chrome/Edge 扩展  ──HTTP──▶  本地 Node 桥接  ──命令行─�
 三者都跑在本机，不需要自建服务器、数据库或 API Key。桥接只监听回环地址。
 
 > 当前版本 **v0.3.1**，面向 Windows。单文件一键下载和合集批量下载都可用，Nexus 免费账号即可。
+>
+> **快速导航**：[功能](#功能) · [前置条件](#前置条件) · [安装](#安装) · [联调](#联调确认三层真的接上了) · [日常使用](#日常使用) · [配置](#配置) · [排错](#常见故障排查) · [卸载](#卸载--清理)
+
+---
 
 ## 功能
 
@@ -26,6 +30,8 @@ Chrome/Edge 扩展  ──HTTP──▶  本地 Node 桥接  ──命令行─�
 - **兜底接管**：浏览器自己发起的 Nexus 下载也会被取消并转交 IDM（可在扩展弹窗关闭）。
 - **手动发送**：在扩展弹窗粘贴 Nexus/CDN 直链直接交给 IDM，便于排查。
 - **不绕过人机验证**：遇到 Cloudflare 会暂停并提示你完成验证，不会假装成功。
+
+---
 
 ## 前置条件
 
@@ -40,6 +46,8 @@ Chrome/Edge 扩展  ──HTTP──▶  本地 Node 桥接  ──命令行─�
 
 `native-host/` 是可选的实验性 Native Messaging 宿主，**主流程不需要安装**，也不需要 Nexus API Key。按下面的三步安装 IDM、桥接和扩展即可。
 
+---
+
 ## 安装
 
 按组件安装，每一步都能单独验证。以下命令都在仓库根目录执行。
@@ -49,7 +57,7 @@ Chrome/Edge 扩展  ──HTTP──▶  本地 Node 桥接  ──命令行─�
 1. 安装 IDM，确认 `IDMan.exe` 的位置。默认是：
    `C:\Program Files (x86)\Internet Download Manager\IDMan.exe`
 2. 先启动一次 IDM，让它写好注册表设置。
-3. 推荐关闭 IDM 的“开始下载 / 下载完成”弹窗。否则桥接虽然把任务交给了 IDM，IDM 会停在弹窗等你确认，看起来像“没开始下载”。
+3. 推荐关闭 IDM 的“开始下载 / 下载完成”弹窗。否则桥接虽然把任务交给了 IDM，IDM 却会停在弹窗等你确认，看起来像“没开始下载”。
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\tools\configure-idm.ps1
@@ -157,6 +165,8 @@ powershell -ExecutionPolicy Bypass -File .\bridge\install-autostart.ps1
 
 > 重新加载扩展后，已经打开的 Nexus 页面不会自动注入新脚本，需要刷新页面。桥接代码改动后要重启桥接，扩展“重新加载”不会重启它。
 
+---
+
 ## 联调：确认三层真的接上了
 
 这一节是从“装好了”到“能下载”的关键，建议按顺序走一遍。
@@ -180,7 +190,7 @@ Chrome/Edge 扩展  ──HTTP──▶  本地 Node 桥接  ──命令行─�
 |---|---|---|
 | 桥接进程 | `node .\tools\test-bridge.js ping` | `"ok": true`、`"idmExists": true` |
 | 扩展 → 桥接 | 点扩展图标 | “已连接”“IDM 已找到” |
-| 扩展 → Nexus | 登录 Nexus，打开任意 Mod 的 Files 页 | 扩展图标可用，页面正常显示 |
+| 扩展 → Nexus | 登录 Nexus，打开任意 Mod 的 Files 页 | 页面正常加载，扩展图标可用 |
 | 端到端 | 点一次 **Manual download** | toast 显示“已交给 IDM”，`bridge\bridge.log` 出现 `spawned`，文件落到 `downloadDir` |
 
 ### 最小验证路径（单文件）
@@ -221,6 +231,8 @@ Get-Content .\bridge\bridge.log -Tail 5
 
 合集是按固定间隔下发、限制同时在途数量的，不要一上来全选几百个来试。先用小样本确认链路，再跑大批量。
 
+---
+
 ## 日常使用
 
 ### 文件页
@@ -238,7 +250,7 @@ Get-Content .\bridge\bridge.log -Tail 5
 
 - **选择**：单个勾选、全选 / 全不选 / 反选 / 仅缺。
 - **下发节奏**：默认每 5 秒下发一个链接，同时最多 2 个文件处于下载中（面板可调，并发 1–5）。
-  不按文件大小估算速度——网速快慢只影响下载本身，不影响配置。
+  配置里不估算下载速度；网速只影响实际下载耗时。
 - **去重**：磁盘已有、扩展下发过、IDM 历史有记录都算重复；默认**不勾选、也不下载**重复项。
 - **同名文件默认不重复下载**：不会生成 `… (2).zip`。需要覆盖时，在重复项对话框里选“覆盖下载”，
   或在该行点“重下”；两者都会先确认，再删除同名旧文件重新下发。
@@ -247,7 +259,7 @@ Get-Content .\bridge\bridge.log -Tail 5
 - **设置**：面板右上角 ⚙ 可调下发间隔、最大同时下载数、重复策略、是否自动打开验证页。
 - **限速 / 验证**：遇到 429 会全体冷却；遇到人机验证会停在那一条，打开 mod 页让你完成验证，通过后自动续跑。
 
-合集下载期间请保留这个标签页（不要关闭），切到后台也可以（后台会放慢节奏）。免费账号 + 限速换链接：100 个 mod 大约 8–10 分钟下发完，实际完成时间看网速和 IDM 队列。
+合集下载期间请保留这个标签页（不要关闭），切到后台也可以（后台会放慢节奏）。免费账号 + 限速换链接：100 个 mod 大约 8–10 分钟全部下发，实际下载完成时间看网速和 IDM 队列。
 
 ### 扩展弹窗
 
@@ -255,6 +267,8 @@ Get-Content .\bridge\bridge.log -Tail 5
 - 开关“启用接管”“点 Manual download 直接下载”“自动拦截 Nexus 下载”。
 - 手动粘贴直链发送到 IDM（默认只接受 `nexusmods.com` / `nexus-cdn.com`，可在 `config.json` 的 `allowedHosts` 修改）。
 - 查看最近记录；解析失败时点“复制诊断”获取页面诊断信息。
+
+---
 
 ## 配置
 
@@ -270,7 +284,16 @@ Get-Content .\bridge\bridge.log -Tail 5
 | `silent` | `true` | 给 IDM 加 `/n`，不弹主窗口 |
 | `dryRun` | `false` | 只写日志，不真正启动 IDM |
 
-修改配置后重启桥接：先结束端口上的桥接进程（命令见下文“卸载 / 清理”第 2 步），再运行 `.\bridge\start.ps1`。`start.ps1 -Restart` 只用于把旧版本换成新版本，同一版本不会强制重启。完整的配置项、环境变量和桥接接口见 [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) 第 6 节。
+修改配置后重启桥接：
+
+1. 先结束端口上的桥接进程（命令见“卸载 / 清理”第 2 步）。
+2. 再运行 `.\bridge\start.ps1`。
+
+> `start.ps1 -Restart` 只用于把旧版本换成新版本；同一版本不会强制重启。
+
+完整的配置项、环境变量和桥接接口见 [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) 第 6 节。
+
+---
 
 ## 常见故障排查
 
@@ -300,6 +323,8 @@ Get-Content .\bridge\bridge.log -Tail 5
 | 扩展 Service Worker | `chrome://extensions` → 扩展卡片 →“检查视图” |
 | `native-host\logs\host.log` | 仅在使用实验性 Native Host 时产生 |
 
+---
+
 ## 卸载 / 清理
 
 1. 在 `chrome://extensions` 或 `edge://extensions` 移除扩展。
@@ -325,6 +350,8 @@ powershell -ExecutionPolicy Bypass -File .\native-host\uninstall.ps1
 ```
 
 6. 按需删除数据：`downloads\`（已下载文件）、`bridge\bridge.log`、`native-host\logs\`、`native-host\config.json`、`tools\idm-settings-backup.json`。
+
+---
 
 ## 项目结构
 
@@ -352,6 +379,8 @@ docs/             开发文档
 - **不会重复下载同名文件**：目标目录已有同名文件时直接跳过，不生成 `(2)`、`(3)`。
   只有你在重复项对话框里选“覆盖下载”，或在该行点“重下”并确认后，才会删除同名旧文件再重新下载。
 - 桥接无鉴权，只监听 `127.0.0.1`，不要暴露到局域网或公网。
+
+---
 
 ## License
 
