@@ -42,13 +42,16 @@ function Get-BridgePidFromLog([string]$LogPath, [int]$LocalPort) {
 try {
     $existing = Invoke-RestMethod -Uri "http://127.0.0.1:$port/ping" -TimeoutSec 2
     if ($existing.ok) {
-        if (-not $expected -or $existing.bridge -eq $expected) {
+        $versionMatches = (-not $expected -or $existing.bridge -eq $expected)
+        if (-not $Restart -and $versionMatches) {
             Write-Host "Bridge already running on http://127.0.0.1:$port (v$($existing.bridge))"
             $existing | ConvertTo-Json -Depth 3
             exit 0
         }
 
-        Write-Warning "An older bridge (v$($existing.bridge), expected v$expected) is already running on port $port."
+        if (-not $versionMatches) {
+            Write-Warning "An older bridge (v$($existing.bridge), expected v$expected) is already running on port $port."
+        }
         if (-not $Restart) {
             Write-Warning "Stop that process, or run: powershell -ExecutionPolicy Bypass -File .\bridge\start.ps1 -Restart"
             exit 1

@@ -123,17 +123,17 @@
 
   function statusText(item) {
     const st = statusOf(item.key);
-    if (st.state === 'resolving') return '解析中…';
-    if (st.state === 'sent') return '已下发，等待落盘';
-    if (st.state === 'waiting') return '等待落盘…';
+    if (st.state === 'resolving') return '解析中';
+    if (st.state === 'sent') return '等待落盘';
+    if (st.state === 'waiting') return '等待落盘';
     if (st.state === 'done') return '已完成';
     if (st.state === 'failed') return '失败';
     if (st.state === 'skipped') return '已跳过';
-    if (st.state === 'blocked') return '需人工验证';
-    if (st.duplicate === 'disk') return '磁盘已存在';
-    if (st.duplicate === 'ledger') return '下发过';
-    if (st.duplicate === 'idm') return 'IDM 有记录';
-    if (!item.available) return item.reason === 'removed' ? '已被删除' : '不可下载';
+    if (st.state === 'blocked') return '需验证';
+    if (st.duplicate === 'disk') return '已存在';
+    if (st.duplicate === 'ledger') return '已下发';
+    if (st.duplicate === 'idm') return 'IDM 已有';
+    if (!item.available) return item.reason === 'removed' ? '已删除' : '不可下载';
     return '待下载';
   }
 
@@ -175,81 +175,195 @@
   // -------------------------------------------------------------------------
 
   const STYLE = `
-    :host { all: initial; }
+    :host {
+      all: initial;
+      display: block;
+      color-scheme: dark;
+      font-size: 0.875rem;
+      font-family: "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+      line-height: 1.45;
+      --nd-bg: #17191f;
+      --nd-surface: #1c1f26;
+      --nd-field: #20242c;
+      --nd-line: rgba(255,255,255,.09);
+      --nd-line-strong: rgba(255,255,255,.14);
+      --nd-text: #e4e7ec;
+      --nd-text-dim: #a5adba;
+      --nd-text-faint: #8b94a3;
+      --nd-accent: #c18a4b;
+      --nd-accent-text: #d9b58e;
+      --nd-focus: #9cb8d8;
+      --nd-good: #a7d8b3;
+      --nd-bad: #e9b1b3;
+      --nd-busy: #a9c7ea;
+    }
     * { box-sizing: border-box; }
+    [hidden] { display: none !important; }
     .panel {
-      position: fixed; right: 16px; bottom: 16px; width: 540px; max-height: 74vh;
+      position: fixed;
+      right: max(1rem, env(safe-area-inset-right));
+      bottom: max(1rem, env(safe-area-inset-bottom));
+      width: min(34rem, calc(100vw - 2rem));
+      max-height: min(46rem, calc(100vh - 2rem));
       display: flex; flex-direction: column;
-      background: #14161c; color: #e9ecf1; border: 1px solid rgba(255,255,255,.12);
-      border-radius: 14px; box-shadow: 0 18px 48px rgba(0,0,0,.55);
-      font: 12.5px/1.45 "Segoe UI", "Microsoft YaHei", sans-serif; overflow: hidden;
+      background: var(--nd-bg); color: var(--nd-text);
+      border: 1px solid var(--nd-line-strong);
+      border-radius: 0.875rem;
+      box-shadow: 0 0.75rem 2rem rgba(0,0,0,.32);
+      font-size: 1em; overflow: hidden;
       z-index: 2147483000;
     }
+    .panel[data-collapsed="1"] { width: min(22rem, calc(100vw - 2rem)); }
     .panel[data-collapsed="1"] .body { display: none; }
-    .head { display: flex; align-items: center; gap: 10px; padding: 12px 14px; background: #191c24; border-bottom: 1px solid rgba(255,255,255,.08); }
+    .panel[data-collapsed="1"] .head { border-bottom-color: transparent; }
+    .head {
+      display: flex; align-items: center; gap: 0.75em;
+      padding: 0.75em 0.875em;
+      background: var(--nd-surface);
+      border-bottom: 1px solid var(--nd-line);
+    }
     .titles { min-width: 0; flex: 1; }
-    .title { font-size: 14px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-    .sub { color: #9aa3b2; font-size: 11.5px; margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-    .head-actions { display: flex; gap: 4px; }
-    .icon { width: 26px; height: 26px; border-radius: 7px; border: 1px solid transparent; background: transparent; color: #9aa3b2; cursor: pointer; font-size: 14px; line-height: 1; }
-    .icon:hover { background: rgba(255,255,255,.08); color: #fff; }
-    .body { display: flex; flex-direction: column; min-height: 0; }
-    .banner { margin: 10px 12px 0; padding: 9px 11px; border-radius: 9px; background: rgba(232,135,30,.14); border: 1px solid rgba(232,135,30,.35); color: #f4c48a; font-size: 12px; }
-    .banner.bad { background: rgba(229,72,77,.14); border-color: rgba(229,72,77,.4); color: #ffb4b6; }
-    .banner.good { background: rgba(46,160,67,.14); border-color: rgba(46,160,67,.4); color: #8fe0a2; }
-    .banner a { color: #f4c48a; }
-    .toolbar { display: flex; align-items: center; gap: 6px; padding: 9px 12px 4px; flex-wrap: wrap; }
-    .toolbar button, .actions button { border: 1px solid rgba(255,255,255,.14); background: #1e222b; color: #dfe4ec; border-radius: 7px; padding: 5px 9px; font-size: 12px; cursor: pointer; }
-    .toolbar button:hover, .actions button:hover { background: #262b36; }
-    .toolbar label.check { display: inline-flex; align-items: center; gap: 5px; color: #cfd6e2; cursor: pointer; }
+    .title { font-size: 1.071em; font-weight: 600; letter-spacing: .01em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .sub { color: var(--nd-text-dim); font-size: 0.857em; margin-top: 0.15em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .head-actions { display: flex; gap: 0.125em; }
+    .icon {
+      width: 1.85em; height: 1.85em; padding: 0.35em;
+      display: grid; place-items: center;
+      border-radius: 0.45em; border: 1px solid transparent;
+      background: transparent; color: var(--nd-text-dim);
+      cursor: pointer;
+    }
+    .icon svg { width: 100%; height: 100%; fill: none; stroke: currentColor; stroke-width: 1.4; stroke-linecap: round; stroke-linejoin: round; }
+    .icon:hover { background: rgba(255,255,255,.06); color: var(--nd-text); }
+    .icon[data-act="settings"][aria-expanded="true"] { color: var(--nd-text); background: rgba(255,255,255,.05); }
+    .panel[data-collapsed="1"] [data-act="collapse"] svg { transform: rotate(180deg); }
+    .body { display: flex; flex-direction: column; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
+    .banner {
+      margin: 0.625em 0.75em 0; padding: 0.55em 0.7em;
+      border-radius: 0.5em;
+      background: rgba(193,138,75,.10);
+      border: 1px solid rgba(193,138,75,.26);
+      color: var(--nd-accent-text);
+      font-size: 0.857em; line-height: 1.5;
+    }
+    .banner.bad { background: rgba(190,116,120,.10); border-color: rgba(190,116,120,.28); color: var(--nd-bad); }
+    .banner.good { background: rgba(117,164,128,.10); border-color: rgba(117,164,128,.28); color: var(--nd-good); }
+    .banner a { color: var(--nd-accent-text); }
+    .toolbar { display: flex; align-items: center; gap: 0.35em; padding: 0.65em 0.75em 0.25em; flex-wrap: wrap; }
+    .toolbar button, .actions button, .settings button, .more button, .dialog-actions button {
+      border: 1px solid var(--nd-line-strong);
+      background: var(--nd-field); color: var(--nd-text);
+      border-radius: 0.45em; padding: 0.4em 0.65em;
+      font: inherit; font-size: 0.928em; line-height: 1.25;
+      cursor: pointer;
+    }
+    .toolbar button:hover, .actions button:hover, .settings button:hover, .more button:hover, .dialog-actions button:hover { background: #272b34; }
+    .toolbar label.check { display: inline-flex; align-items: center; gap: 0.4em; color: var(--nd-text); cursor: pointer; font-size: 0.928em; }
     .spacer { flex: 1; }
-    .dir { padding: 2px 12px 8px; color: #8f98a8; font-size: 11.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-    .dir .path { color: #c9d1de; }
-    .list { overflow: auto; min-height: 90px; max-height: 40vh; border-top: 1px solid rgba(255,255,255,.06); border-bottom: 1px solid rgba(255,255,255,.06); }
-    .row { display: flex; align-items: center; gap: 9px; padding: 7px 12px; border-bottom: 1px solid rgba(255,255,255,.04); }
-    .row:hover { background: rgba(255,255,255,.03); }
-    .row input[type=checkbox] { flex: 0 0 auto; margin: 0; accent-color: #e8871e; }
+    .dir {
+      padding: 0.15em 0.75em 0.6em;
+      color: var(--nd-text-faint); font-size: 0.857em;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .dir .path { color: var(--nd-text-dim); }
+    .list {
+      overflow: auto; min-height: 9em;
+      max-height: min(24rem, 38vh);
+      border-top: 1px solid var(--nd-line);
+      border-bottom: 1px solid var(--nd-line);
+      scrollbar-width: thin;
+      scrollbar-color: #3a404b transparent;
+      overscroll-behavior: contain;
+    }
+    .list::-webkit-scrollbar { width: 0.45rem; }
+    .list::-webkit-scrollbar-thumb { background: #3a404b; border-radius: 999px; }
+    .row { display: flex; align-items: center; gap: 0.65em; padding: 0.55em 0.75em; border-bottom: 1px solid rgba(255,255,255,.045); }
+    .row:last-child { border-bottom: 0; }
+    .row:hover { background: rgba(255,255,255,.025); }
+    .row input[type=checkbox] { flex: 0 0 auto; margin: 0; accent-color: var(--nd-accent); }
     .row .info { min-width: 0; flex: 1; }
-    .row .name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-    .row .file { color: #808a99; font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-    .row .size { flex: 0 0 66px; text-align: right; color: #9aa3b2; font-size: 11.5px; }
-    .row .redo { flex: 0 0 auto; border: 1px solid rgba(232,135,30,.45); background: rgba(232,135,30,.12); color: #f4c48a; border-radius: 6px; padding: 2px 6px; font-size: 11px; cursor: pointer; }
-    .row .redo:hover { background: rgba(232,135,30,.22); }
-    .chip { flex: 0 0 auto; padding: 2px 7px; border-radius: 999px; font-size: 11px; background: rgba(255,255,255,.07); color: #aeb7c5; white-space: nowrap; }
-    .chip.good { background: rgba(46,160,67,.18); color: #8fe0a2; }
-    .chip.bad { background: rgba(229,72,77,.18); color: #ffb4b6; }
-    .chip.busy { background: rgba(56,139,253,.18); color: #9ec7ff; }
-    .chip.warn { background: rgba(232,135,30,.18); color: #f4c48a; }
-    .chip.muted { background: rgba(255,255,255,.05); color: #7f8794; }
-    .row.unavailable .name { color: #7f8794; text-decoration: line-through; }
-    .row.unavailable a { color: #9ec7ff; }
-    .more { padding: 8px 12px; text-align: center; }
+    .row .name { color: var(--nd-text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .row .file { color: var(--nd-text-faint); font-size: 0.857em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .row .file a { color: #a8c3e2; text-decoration: none; }
+    .row .file a:hover { text-decoration: underline; }
+    .row .size { flex: 0 0 4.8em; text-align: right; color: var(--nd-text-dim); font-size: 0.857em; }
+    .row .redo {
+      flex: 0 0 auto;
+      border: 1px solid rgba(193,138,75,.38); background: rgba(193,138,75,.10);
+      color: var(--nd-accent-text); border-radius: 0.4em;
+      padding: 0.15em 0.5em; font: inherit; font-size: 0.857em; cursor: pointer;
+    }
+    .row .redo:hover { background: rgba(193,138,75,.18); }
+    .chip {
+      flex: 0 0 auto; padding: 0.15em 0.55em; border-radius: 999px;
+      font-size: 0.857em;
+      background: rgba(255,255,255,.055); color: var(--nd-text-dim);
+      white-space: nowrap;
+    }
+    .chip.good { background: rgba(117,164,128,.13); color: var(--nd-good); }
+    .chip.bad { background: rgba(190,116,120,.13); color: var(--nd-bad); }
+    .chip.busy { background: rgba(126,156,196,.13); color: var(--nd-busy); }
+    .chip.warn { background: rgba(193,138,75,.13); color: var(--nd-accent-text); }
+    .chip.muted { background: rgba(255,255,255,.045); color: var(--nd-text-faint); }
+    .row.unavailable .name { color: var(--nd-text-faint); text-decoration: line-through; }
+    .row.unavailable a { color: #a8c3e2; }
+    .more { padding: 0.6em 0.75em; text-align: center; }
     .more button { width: 100%; }
-    .progress { padding: 8px 12px 2px; }
-    .bar { height: 5px; border-radius: 999px; background: rgba(255,255,255,.09); overflow: hidden; }
-    .bar i { display: block; height: 100%; width: 0; background: linear-gradient(90deg,#e8871e,#f0a34f); transition: width .25s ease; }
-    .progress-text { color: #8f98a8; font-size: 11.5px; margin-top: 4px; }
-    .actions { display: flex; align-items: center; gap: 6px; padding: 9px 12px 12px; }
-    .actions .primary { background: #e8871e; border-color: #e8871e; color: #1a1305; font-weight: 600; }
-    .actions .primary:hover { background: #f09a38; }
-    .actions button[disabled] { opacity: .45; cursor: default; }
-    .log { max-height: 150px; overflow: auto; border-top: 1px solid rgba(255,255,255,.06); padding: 6px 12px; font: 11px/1.5 Consolas, monospace; color: #9aa3b2; }
-    .log-line.bad { color: #ff9a9d; }
-    .log-line.good { color: #8fe0a2; }
-    .settings { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 12px; padding: 10px 12px 12px; border-top: 1px solid rgba(255,255,255,.06); }
-    .settings label { display: flex; flex-direction: column; gap: 3px; color: #9aa3b2; font-size: 11px; }
-    .settings input[type=number], .settings select { background: #1e222b; border: 1px solid rgba(255,255,255,.14); color: #e9ecf1; border-radius: 6px; padding: 4px 6px; font-size: 12px; }
+    .progress { padding: 0.6em 0.75em 0.15em; }
+    .bar { height: 0.3rem; border-radius: 999px; background: rgba(255,255,255,.08); overflow: hidden; }
+    .bar i { display: block; height: 100%; width: 0; background: linear-gradient(90deg,#a97b47,#c89a63); transition: width .25s ease; }
+    .progress-text { color: var(--nd-text-faint); font-size: 0.857em; margin-top: 0.3em; }
+    .actions { display: flex; align-items: center; gap: 0.45em; padding: 0.65em 0.75em 0.75em; }
+    .actions .primary { background: var(--nd-accent); border-color: var(--nd-accent); color: #1a130b; font-weight: 600; }
+    .actions .primary:hover { background: #cc9858; }
+    .actions button[disabled] { opacity: .5; cursor: default; }
+    .log {
+      max-height: 9.5em; overflow: auto;
+      border-top: 1px solid var(--nd-line);
+      padding: 0.45em 0.75em;
+      font: 0.857em/1.5 Consolas, ui-monospace, monospace;
+      color: var(--nd-text-dim);
+    }
+    .log-line.bad { color: var(--nd-bad); }
+    .log-line.good { color: var(--nd-good); }
+    .settings {
+      display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 0.6em 0.85em; padding: 0.75em;
+      border-top: 1px solid var(--nd-line);
+    }
+    .settings label { display: flex; flex-direction: column; gap: 0.25em; color: var(--nd-text-dim); font-size: 0.857em; }
+    .settings input[type=number], .settings select {
+      width: 100%;
+      background: var(--nd-field); border: 1px solid var(--nd-line-strong);
+      color: var(--nd-text); border-radius: 0.4em;
+      padding: 0.35em 0.5em; font: inherit; font-size: 1.08em;
+    }
     .settings .wide { grid-column: 1 / -1; }
-    .settings button { background: #1e222b; border: 1px solid rgba(255,255,255,.14); color: #dfe4ec; border-radius: 6px; padding: 5px 8px; cursor: pointer; font-size: 11.5px; }
-    .settings button:hover { background: #262b36; }
-    .settings .rowcheck { flex-direction: row; align-items: center; gap: 6px; }
-    .dialog { position: absolute; inset: 0; background: rgba(8,10,14,.72); display: flex; align-items: center; justify-content: center; padding: 16px; }
-    .dialog-box { width: 100%; background: #1b1f27; border: 1px solid rgba(255,255,255,.14); border-radius: 12px; padding: 14px; }
-    .dialog-title { font-weight: 600; margin-bottom: 8px; }
-    .dialog-list { max-height: 150px; overflow: auto; color: #b9c1cf; font-size: 11.5px; margin-bottom: 10px; }
-    .dialog-list div { padding: 2px 0; }
-    .dialog-actions { display: flex; gap: 8px; justify-content: flex-end; }
-    .empty { padding: 18px 12px; color: #8f98a8; text-align: center; }
+    .settings .rowcheck { flex-direction: row; align-items: center; gap: 0.45em; }
+    .dialog { position: absolute; inset: 0; background: rgba(10,12,16,.66); display: flex; align-items: center; justify-content: center; padding: 1rem; }
+    .dialog-box { width: 100%; background: var(--nd-surface); border: 1px solid var(--nd-line-strong); border-radius: 0.75rem; padding: 0.9rem; }
+    .dialog-title { font-weight: 600; margin-bottom: 0.55em; }
+    .dialog-list { max-height: 9.5em; overflow: auto; color: var(--nd-text-dim); font-size: 0.928em; margin-bottom: 0.65em; }
+    .dialog-list div { padding: 0.1em 0; }
+    .dialog-actions { display: flex; gap: 0.5em; justify-content: flex-end; flex-wrap: wrap; }
+    .empty { min-height: 10em; padding: 1.25em 0.75em; color: var(--nd-text-faint); text-align: center; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 0.6em; }
+    .empty-text { max-width: 30em; color: var(--nd-text-dim); font-size: 0.928em; line-height: 1.5; }
+    .empty-action { border: 1px solid var(--nd-line-strong); background: var(--nd-field); color: var(--nd-text); border-radius: 0.45em; padding: 0.4em 0.8em; font: inherit; font-size: 0.928em; cursor: pointer; }
+    .empty.bad .empty-text { color: var(--nd-bad); }
+    .spinner { width: 1.25em; height: 1.25em; border: 2px solid rgba(255,255,255,.14); border-top-color: var(--nd-accent-text); border-radius: 50%; animation: nd-spin .7s linear infinite; }
+    @keyframes nd-spin { to { transform: rotate(360deg); } }
+    .panel[data-phase="loading"] .toolbar,
+    .panel[data-phase="loading"] .dir,
+    .panel[data-phase="loading"] .actions { opacity: .6; }
+    .panel[data-phase="loading"] .toolbar button,
+    .panel[data-phase="loading"] .actions button { pointer-events: none; }
+    button:focus-visible, input:focus-visible, select:focus-visible, a:focus-visible {
+      outline: 2px solid var(--nd-focus);
+      outline-offset: 2px;
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .bar i, .spinner, .icon svg { animation: none; transition: none; }
+    }
   `;
 
   function buildPanel() {
@@ -262,31 +376,37 @@
       '<style>' +
       STYLE +
       '</style>' +
-      '<div class="panel" data-collapsed="0">' +
+      '<div class="panel" data-collapsed="0" data-phase="loading" role="region" aria-label="Nexus 合集下载">' +
       '  <div class="head">' +
       '    <div class="titles"><div class="title" data-el="title">Nexus Collections</div><div class="sub" data-el="sub">正在读取合集…</div></div>' +
       '    <div class="head-actions">' +
-      '      <button class="icon" data-act="settings" title="下载设置">⚙</button>' +
-      '      <button class="icon" data-act="collapse" title="收起">–</button>' +
-      '      <button class="icon" data-act="close" title="关闭面板（刷新页面可重新打开）">×</button>' +
+      '      <button class="icon" data-act="settings" title="下载设置" aria-label="下载设置" aria-expanded="false">' +
+      '        <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 5h10M3 11h10"/><circle cx="6" cy="5" r="1.6"/><circle cx="10" cy="11" r="1.6"/></svg>' +
+      '      </button>' +
+      '      <button class="icon" data-act="collapse" title="收起" aria-label="收起面板" aria-expanded="true">' +
+      '        <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 10l4-4 4 4"/></svg>' +
+      '      </button>' +
+      '      <button class="icon" data-act="close" title="关闭面板" aria-label="关闭面板">' +
+      '        <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4.5 4.5l7 7M11.5 4.5l-7 7"/></svg>' +
+      '      </button>' +
       '    </div>' +
       '  </div>' +
       '  <div class="body">' +
-      '    <div class="banner" data-el="banner" hidden></div>' +
+      '    <div class="banner" data-el="banner" role="status" aria-live="polite" hidden></div>' +
       '    <div class="toolbar">' +
       '      <label class="check"><input type="checkbox" data-act="all">全选</label>' +
       '      <button data-act="none">全不选</button>' +
       '      <button data-act="invert">反选</button>' +
-      '      <button data-act="missing">仅缺</button>' +
+      '      <button data-act="missing">仅缺失</button>' +
       '      <span class="spacer"></span>' +
       '      <button data-act="folder">打开目录</button>' +
       '      <button data-act="sync">同步状态</button>' +
       '      <button data-act="reload">刷新列表</button>' +
       '    </div>' +
-      '    <div class="dir">保存到 <span class="path" data-el="dir"></span></div>' +
-      '    <div class="list" data-el="list"><div class="empty">正在读取合集…</div></div>' +
+      '    <div class="dir">保存到 <span class="path" data-el="dir">—</span></div>' +
+      '    <div class="list" data-el="list" aria-busy="true"><div class="empty"><span class="spinner"></span><div class="empty-text">正在读取合集…</div></div></div>' +
       '    <div class="more" data-el="more" hidden><button data-act="more">显示更多</button></div>' +
-      '    <div class="progress"><div class="bar"><i data-el="bar"></i></div><div class="progress-text" data-el="progress"></div></div>' +
+      '    <div class="progress"><div class="bar"><i data-el="bar"></i></div><div class="progress-text" data-el="progress" aria-live="polite"></div></div>' +
       '    <div class="actions">' +
       '      <button class="primary" data-act="start">下载选中</button>' +
       '      <button data-act="pause" hidden>暂停</button>' +
@@ -297,13 +417,13 @@
       '    </div>' +
       '    <div class="settings" data-el="settings" hidden>' +
       '      <label>下发间隔（秒）<input type="number" min="0" max="600" step="1" data-set="collectionPauseSeconds"></label>' +
-      '      <label>最大同时下载数<input type="number" min="1" max="5" step="1" data-set="collectionMaxConcurrent"></label>' +
-      '      <label>遇到重复项<select data-set="collectionDuplicatePolicy"><option value="skip">直接跳过</option><option value="ask">每次询问</option></select></label>' +
-      '      <label class="rowcheck"><input type="checkbox" data-set="collectionUseIdmHistory">把 IDM 历史算作重复</label>' +
+      '      <label>并发下载数<input type="number" min="1" max="5" step="1" data-set="collectionMaxConcurrent"></label>' +
+      '      <label>重复项处理<select data-set="collectionDuplicatePolicy"><option value="skip">直接跳过</option><option value="ask">每次询问</option></select></label>' +
+      '      <label class="rowcheck"><input type="checkbox" data-set="collectionUseIdmHistory">IDM 历史算作重复</label>' +
       '      <label class="rowcheck"><input type="checkbox" data-set="collectionSmallestFirst">小文件优先</label>' +
-      '      <label class="rowcheck"><input type="checkbox" data-set="collectionOpenCheckPage">人机验证时自动开页面</label>' +
-      '      <label class="rowcheck"><input type="checkbox" data-set="collectionFolderSuffix">目录名带 slug</label>' +
-      '      <button class="wide" data-act="resetjob">重置本合集的进度记录（不删文件）</button>' +
+      '      <label class="rowcheck"><input type="checkbox" data-set="collectionOpenCheckPage">验证时自动打开页面</label>' +
+      '      <label class="rowcheck"><input type="checkbox" data-set="collectionFolderSuffix">目录名包含 slug</label>' +
+      '      <button class="wide" data-act="resetjob">重置进度（不删文件）</button>' +
       '    </div>' +
       '    <div class="log" data-el="log" hidden></div>' +
       '  </div>' +
@@ -379,13 +499,20 @@
     switch (act) {
       case 'settings':
         dom.settings.hidden = !dom.settings.hidden;
+        setExpandedState(dom.root.querySelector('[data-act="settings"]'), !dom.settings.hidden, '下载设置');
         break;
-      case 'collapse':
-        dom.panel.setAttribute('data-collapsed', dom.panel.getAttribute('data-collapsed') === '1' ? '0' : '1');
+      case 'collapse': {
+        const collapsed = dom.panel.getAttribute('data-collapsed') !== '1';
+        dom.panel.setAttribute('data-collapsed', collapsed ? '1' : '0');
+        const button = dom.root.querySelector('[data-act="collapse"]');
+        button.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+        button.setAttribute('aria-label', collapsed ? '展开面板' : '收起面板');
+        button.title = collapsed ? '展开' : '收起';
         break;
+      }
       case 'close':
         if (state.running && !state.abort) {
-          if (!window.confirm('下载正在进行，关闭面板会停止队列。确定关闭？')) return;
+          if (!window.confirm('下载进行中，关闭会停止队列。确定关闭？')) return;
           stopQueue();
         }
         dom.host.remove();
@@ -409,7 +536,7 @@
         break;
       case 'reload':
         if (state.running) {
-          setBanner('正在下载，先暂停或停止再刷新列表。', 'bad');
+          setBanner('下载中，暂停后再刷新。', 'bad');
           return;
         }
         loadCollection(true);
@@ -533,8 +660,12 @@
   async function loadCollection(force) {
     if (state.loading) return;
     state.loading = true;
-    state.phase = 'loading';
-    if (dom) setBanner('正在读取合集…', '');
+    setPanelPhase('loading');
+    if (dom) {
+      setBanner('', '');
+      dom.sub.textContent = '正在读取合集…';
+      renderLoading();
+    }
     try {
       const response = await send({
         type: 'nd:collectionResolve',
@@ -545,9 +676,15 @@
       });
 
       if (!response || !response.ok) {
-        if (dom) setBanner('读取合集失败：' + ((response && response.error) || '未知错误'), 'bad');
-        log('读取合集失败：' + ((response && response.error) || '未知错误'), 'bad');
-        renderEmpty('读取合集失败，可点“刷新列表”重试。');
+        const reason = (response && response.error) || '未知错误';
+        clearCollectionData();
+        setPanelPhase('error');
+        if (dom) {
+          dom.sub.textContent = '读取失败';
+          setBanner(reason, 'bad');
+        }
+        log('读取合集失败：' + reason, 'bad');
+        renderEmpty('无法加载合集。', { action: 'reload', label: '重试', tone: 'bad' });
         return;
       }
 
@@ -561,7 +698,7 @@
       state.renderLimit = PAGE_SIZE;
       state.preflightDone = false;
       state.duplicateCounts = { disk: 0, ledger: 0, idm: 0 };
-      state.phase = 'ready';
+      setPanelPhase(state.items.length ? 'ready' : 'empty');
 
       await restoreJob(response.items);
       // Default selection: everything downloadable that is not already here.
@@ -570,6 +707,16 @@
       log('已读取合集：' + state.meta.name + '（' + state.items.length + ' 个 mod）');
 
       runPreflight();
+    } catch (err) {
+      const reason = (err && err.message) || String(err);
+      clearCollectionData();
+      setPanelPhase('error');
+      if (dom) {
+        dom.sub.textContent = '读取失败';
+        setBanner(reason, 'bad');
+      }
+      renderEmpty('无法加载合集。', { action: 'reload', label: '重试', tone: 'bad' });
+      log('读取合集失败：' + reason, 'bad');
     } finally {
       state.loading = false;
     }
@@ -591,9 +738,9 @@
     if (!response || !response.ok) {
       const reason = (response && response.error) || '';
       if (/未启动|无法连接|Failed to fetch/i.test(reason)) {
-        setBanner('本地桥接没在运行：先运行 bridge\\start.ps1，然后点“刷新列表”。', 'bad');
+        setBanner('本地桥接未运行。启动 bridge\\start.ps1 后刷新列表。', 'bad');
       } else if (response && response.bridgeMissing) {
-        setBanner('本地桥接没有合集接口（版本过旧）：结束旧的 node bridge\\server.js，重新运行 bridge\\start.ps1，再刷新本页。', 'bad');
+        setBanner('桥接版本过旧（需 0.3.0）。重启 bridge\\start.ps1 后刷新。', 'bad');
         state.bridgeOld = true;
       } else {
         setBanner('去重检查失败：' + (reason || '未知错误'), 'bad');
@@ -619,14 +766,14 @@
     const duplicates = counts.disk + counts.ledger + counts.idm;
     if (duplicates > 0) {
       setBanner(
-        '发现 ' + duplicates + ' 个同名文件（磁盘 ' + counts.disk + ' / 下发过 ' + counts.ledger + ' / IDM ' + counts.idm +
-          '），默认不勾选、也不会重复下载；要覆盖请点该行“重下”。',
+        duplicates + ' 个同名文件已跳过：磁盘 ' + counts.disk + ' · 已下发 ' + counts.ledger + ' · IDM ' + counts.idm +
+          '。点行内“重下”覆盖。',
         ''
       );
     } else if (response.historyError) {
-      setBanner('IDM 历史读取失败，只用了磁盘与下发记录去重：' + response.historyError, '');
+      setBanner('IDM 历史读取失败，已按磁盘与下发记录去重。', '');
     } else if (!state.items.length) {
-      setBanner('这个合集里没有可下载的 mod。', 'bad');
+      setBanner('合集里没有可下载的 mod。', 'bad');
     } else {
       setBanner('', '');
     }
@@ -652,7 +799,7 @@
     }
     if (restored > 0) {
       log('已恢复上次进度：' + restored + ' 项。', 'good');
-      setBanner('已恢复上次进度（' + restored + ' 项）。点“继续”会从还没完成的开始。', 'good');
+      setBanner('已恢复 ' + restored + ' 项进度。', 'good');
     }
   }
 
@@ -766,18 +913,80 @@
     dom.title.textContent = state.meta.name || state.meta.slug;
     const meta = state.items.length + ' 个 mod · ' + C.formatSize(state.meta.totalSize);
     dom.sub.textContent = 'v' + state.meta.revision + ' · ' + meta;
-    dom.dir.textContent = state.dir || '（点“打开目录”可创建）';
+    dom.dir.textContent = state.dir || '尚未创建（打开目录可创建）';
     renderList();
     updateSelectionUi();
     syncSettingsForm();
   }
 
-  function renderEmpty(text) {
+  function clearCollectionData() {
+    state.meta = null;
+    state.items = [];
+    state.byKey = new Map();
+    state.selected = new Set();
+    state.status = new Map();
+    state.dir = '';
+  }
+
+  function setPanelPhase(phase) {
+    state.phase = phase;
     if (!dom) return;
+    const busy = phase === 'loading';
+    dom.panel.setAttribute('data-phase', phase);
+    dom.list.setAttribute('aria-busy', busy ? 'true' : 'false');
+    for (const control of dom.root.querySelectorAll('.toolbar button, .toolbar input, .actions button')) {
+      if (busy) {
+        if (control.dataset.loadDisabled === undefined) {
+          control.dataset.loadDisabled = control.disabled ? '1' : '0';
+        }
+        control.disabled = true;
+      } else if (control.dataset.loadDisabled !== undefined) {
+        control.disabled = control.dataset.loadDisabled === '1';
+        delete control.dataset.loadDisabled;
+      }
+    }
+    const start = dom.root.querySelector('[data-act="start"]');
+    if (start && phase === 'error') start.disabled = true;
+  }
+
+  function setExpandedState(button, expanded, label) {
+    if (!button) return;
+    button.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+    button.setAttribute('aria-label', (expanded ? '收起' : '展开') + label);
+  }
+
+  function renderLoading() {
+    renderEmpty('正在读取合集…', { loading: true });
+  }
+
+  function renderEmpty(text, options) {
+    if (!dom) return;
+    const opts = options || {};
     dom.list.textContent = '';
+
     const el = document.createElement('div');
-    el.className = 'empty';
-    el.textContent = text;
+    el.className = 'empty' + (opts.tone === 'bad' ? ' bad' : '');
+
+    if (opts.loading) {
+      const spinner = document.createElement('span');
+      spinner.className = 'spinner';
+      spinner.setAttribute('aria-hidden', 'true');
+      el.appendChild(spinner);
+    }
+
+    const copy = document.createElement('div');
+    copy.className = 'empty-text';
+    copy.textContent = text;
+    el.appendChild(copy);
+
+    if (opts.action && opts.label) {
+      const button = document.createElement('button');
+      button.className = 'empty-action';
+      button.setAttribute('data-act', opts.action);
+      button.textContent = opts.label;
+      el.appendChild(button);
+    }
+
     dom.list.appendChild(el);
   }
 
@@ -787,7 +996,9 @@
     dom.rows = new Map();
 
     if (!state.items.length) {
-      renderEmpty(state.phase === 'loading' ? '正在读取合集…' : '没有可显示的 mod。');
+      if (state.phase === 'loading') renderLoading();
+      else if (state.phase === 'error') renderEmpty('无法加载合集。', { action: 'reload', label: '重试', tone: 'bad' });
+      else renderEmpty('没有可下载的 mod。', { action: 'reload', label: '刷新列表' });
       dom.more.hidden = true;
       return;
     }
@@ -831,7 +1042,7 @@
       file.appendChild(link);
       file.appendChild(document.createTextNode(item.version ? ' · v' + item.version : ''));
     } else {
-      file.textContent = item.reason === 'no-file' ? '合集里没有可下载的文件（外部来源）' : 'Nexus 上已不可用';
+      file.textContent = item.reason === 'no-file' ? '合集未提供文件（外部来源）' : 'Nexus 上不可用';
     }
 
     info.appendChild(name);
@@ -887,10 +1098,11 @@
       'v' + state.meta.revision + ' · ' + state.items.length + ' 个 mod · ' + C.formatSize(state.meta.totalSize) +
       ' · 已选 ' + chosen.length;
     dom.progress.textContent =
-      '已选 ' + chosen.length + ' · 已落盘 ' + done + ' · 待落盘 ' + pendingDisk +
-      ' · 并发上限 ' + maxConcurrent() + ' · 间隔 ' + Math.round(P.computeGapMs(pacingOptions()) / 1000) + 's' +
+      '已选 ' + chosen.length + ' · 完成 ' + done + '/' + state.items.length +
+      (pendingDisk ? ' · 待落盘 ' + pendingDisk : '') +
+      (state.running ? ' · 并发 ' + maxConcurrent() + ' · 间隔 ' + Math.round(P.computeGapMs(pacingOptions()) / 1000) + 's' : '') +
       (state.runTotal ? ' · 本次 ' + state.runDone + '/' + state.runTotal : '') +
-      (state.cooldownUntil > Date.now() ? ' · 限速冷却 ' + P.cooldownSecondsLeft(state.cooldownUntil) + 's' : '');
+      (state.cooldownUntil > Date.now() ? ' · 冷却 ' + P.cooldownSecondsLeft(state.cooldownUntil) + 's' : '');
     const fraction = state.items.length ? (done / state.items.length) * 100 : 0;
     dom.bar.style.width = Math.min(100, Math.round(fraction)) + '%';
 
@@ -940,7 +1152,7 @@
 
       const title = document.createElement('div');
       title.className = 'dialog-title';
-      title.textContent = '发现 ' + duplicates.length + ' 个同名文件（默认不重复下载）';
+      title.textContent = duplicates.length + ' 个同名文件已存在';
 
       const list = document.createElement('div');
       list.className = 'dialog-list';
@@ -960,10 +1172,10 @@
       actions.className = 'dialog-actions';
       const skip = document.createElement('button');
       skip.setAttribute('data-act', 'dialog-skip');
-      skip.textContent = '跳过这些（推荐）';
+      skip.textContent = '全部跳过（推荐）';
       const replace = document.createElement('button');
       replace.setAttribute('data-act', 'dialog-replace');
-      replace.textContent = '覆盖下载（先删旧文件）';
+      replace.textContent = '覆盖旧文件';
       const cancel = document.createElement('button');
       cancel.setAttribute('data-act', 'dialog-cancel');
       cancel.textContent = '取消';
@@ -1007,7 +1219,7 @@
   async function ensureBridge() {
     const ping = await send({ type: 'nd:ping' });
     if (!ping || !ping.ok) {
-      setBanner('本地桥接未启动：请运行 bridge\\start.ps1，然后刷新本页。', 'bad');
+      setBanner('本地桥接未运行。启动 bridge\\start.ps1 后重试。', 'bad');
       return null;
     }
     state.bridge = ping;
@@ -1016,7 +1228,7 @@
     const minor = Number(version.split('.')[1]) || 0;
     state.bridgeOld = major < 1 && minor < 3;
     if (state.bridgeOld) {
-      setBanner('桥接版本是 ' + version + '，合集接口需要 0.3.0：请结束旧的 node bridge\\server.js 并重新运行 bridge\\start.ps1，然后刷新本页。', 'bad');
+      setBanner('桥接版本过旧（' + version + '，需 0.3.0）。重启 bridge\\start.ps1 后刷新。', 'bad');
       return null;
     }
     return ping;
@@ -1029,7 +1241,7 @@
 
     const keys = orderedSelection();
     if (!keys.length) {
-      setBanner('没有勾选任何 mod。', 'bad');
+      setBanner('先勾选要下载的 mod。', 'bad');
       return;
     }
 
@@ -1048,7 +1260,7 @@
       const st = statusOf(key);
       if (st.duplicate && duplicateAction !== 'replace') {
         st.state = 'skipped';
-        st.error = '同名文件已存在，未重复下载（可在该行点“重下”覆盖）';
+        st.error = '同名文件已存在，已跳过';
         skippedDuplicates += 1;
         continue;
       }
@@ -1059,7 +1271,7 @@
     if (!plan.length) {
       setBanner(
         skippedDuplicates
-          ? '选中的都是已存在的同名文件，已全部跳过。要覆盖请在该行点“重下”。'
+          ? '同名文件已全部跳过。点行内“重下”可覆盖。'
           : '没有可下载的项。',
         ''
       );
@@ -1070,8 +1282,7 @@
 
     if (plan.length > 50) {
       const ok = window.confirm(
-        '这次要下发 ' + plan.length + ' 个文件。\n' +
-          '免费账号需要逐个换链接，按当前节奏大约要 ' + estimateDuration(plan) + '。\n继续吗？'
+        '将下发 ' + plan.length + ' 个文件，预计 ' + estimateDuration(plan) + '。继续？'
       );
       if (!ok) return;
     }
@@ -1082,13 +1293,13 @@
     state.paused = false;
     state.pauseReason = '';
     state.strike = 0;
-    state.phase = 'running';
+    setPanelPhase('running');
     state.runTotal = plan.length;
     state.runDone = 0;
     await adoptSharedCooldown();
     setBanner(
       skippedDuplicates
-        ? '已跳过 ' + skippedDuplicates + ' 个同名文件（默认不重复下载）；要覆盖请点行内“重下”。'
+        ? '已跳过 ' + skippedDuplicates + ' 个同名文件。点“重下”覆盖。'
         : '',
       ''
     );
@@ -1130,7 +1341,7 @@
       updateSelectionUi();
 
       if (outcome === 'login') {
-        setBanner('Nexus 要你登录：登录后点“重试失败”。', 'bad');
+        setBanner('需要登录 Nexus。登录后点“重试失败”。', 'bad');
         stopQueue();
         break;
       }
@@ -1151,7 +1362,7 @@
     state.running = false;
     state.abort = false;
     state.paused = false;
-    state.phase = 'idle';
+    setPanelPhase('idle');
     state.runTotal = 0;
     state.runDone = 0;
     await saveJob();
@@ -1165,12 +1376,12 @@
       return s === 'sent' || s === 'waiting';
     }).length;
     if (aborted) {
-      setBanner('已停止。已落盘 ' + done + ' 个，待落盘 ' + pendingDisk + ' 个，失败 ' + failed + ' 个。', '');
+      setBanner('已停止：完成 ' + done + ' · 待落盘 ' + pendingDisk + ' · 失败 ' + failed + '。', '');
       log('队列已停止。', 'info');
     } else {
       setBanner(
-        '本次结束：已落盘 ' + done + ' 个' +
-          (pendingDisk ? '，IDM 还在下载 ' + pendingDisk + ' 个（会自动同步）' : '') +
+        '已完成 ' + done + ' 个' +
+          (pendingDisk ? '，' + pendingDisk + ' 个仍在 IDM 下载' : '') +
           '，失败 ' + failed + ' 个。',
         failed ? '' : 'good'
       );
@@ -1193,7 +1404,7 @@
     if (!state.running) return;
     state.paused = true;
     state.pauseReason = state.pauseReason || 'user';
-    setBanner('已暂停。点“继续”从当前这一条接着跑。', '');
+    setBanner('已暂停。点“继续”接着下载。', '');
     updateSelectionUi();
   }
 
@@ -1225,7 +1436,7 @@
     if (count) {
       renderList();
       updateSelectionUi();
-      setBanner('已把 ' + count + ' 个失败项重新勾选，点“下载选中”重试。', 'good');
+      setBanner('已重新勾选 ' + count + ' 个失败项。点“下载选中”重试。', 'good');
     }
   }
 
@@ -1247,7 +1458,7 @@
     const detail = st.detail ? '\n当前：' + st.detail : '';
     if (
       !window.confirm(
-        '覆盖重下：' + name + detail + '\n\n会先删除目标目录里的同名文件，再让 IDM 重新下载。\n确定吗？'
+        '覆盖 ' + name + '？' + detail + '\n\n会删除目标目录中的同名文件后重新下载。'
       )
     ) {
       return;
@@ -1279,10 +1490,10 @@
 
   async function resetJob() {
     if (state.running) {
-      setBanner('正在下载，先停止再重置进度。', 'bad');
+      setBanner('下载中，停止后再重置。', 'bad');
       return;
     }
-    if (!window.confirm('清空本合集的下载进度记录？已下载的文件不会被删除。')) return;
+    if (!window.confirm('重置本合集进度？已下载的文件不会删除。')) return;
     await send({ type: 'nd:collectionJobClear', jobId: state.jobId });
     for (const st of state.status.values()) {
       st.state = '';
@@ -1292,7 +1503,7 @@
     renderList();
     updateSelectionUi();
     await runPreflight();
-    setBanner('进度记录已清空，重复项已重新检查。', 'good');
+    setBanner('进度已重置。', 'good');
   }
 
   async function waitWhilePaused() {
@@ -1523,10 +1734,10 @@
       await saveJob();
       if (doneCount > 0) log('同步：新确认 ' + doneCount + ' 个文件已落盘。', 'good');
       if (opts.manual) {
-        setBanner('已同步：新确认 ' + doneCount + ' 个落盘。', doneCount ? 'good' : '');
+        setBanner('已同步：新增 ' + doneCount + ' 个落盘。', doneCount ? 'good' : '');
       }
     } else if (opts.manual) {
-      setBanner('已同步：IDM 还没有把新文件放进目录，稍后会自动再查。', '');
+      setBanner('已同步：文件尚未落盘，稍后自动再查。', '');
     }
 
     return { checked: pending.length, done: doneCount };
@@ -1565,7 +1776,7 @@
     } catch (_) {
       /* ignore */
     }
-    setBanner('Nexus 限速了：冷却 ' + next.seconds + ' 秒后自动继续（不会重头）。', 'bad');
+    setBanner('触发限速：冷却 ' + next.seconds + ' 秒后自动继续。', 'bad');
     log('触发限速，冷却 ' + next.seconds + ' 秒（第 ' + state.strike + ' 次）。', 'bad');
     updateSelectionUi();
   }
@@ -1590,9 +1801,9 @@
     state.pauseReason = 'challenge';
     state.strike = 0;
     setBanner(
-      'N 网要求人机验证。' +
-        (state.settings.collectionOpenCheckPage !== false ? '已在验证页面打开该 mod；' : '请在下方链接打开后完成验证；') +
-        '通过后队列会自动继续。',
+      '需要人机验证。' +
+        (state.settings.collectionOpenCheckPage !== false ? '已打开验证页；' : '打开验证页完成；') +
+        '通过后自动继续。',
       'bad',
       item.pageUrl ? { label: '打开验证页面', href: item.pageUrl } : null
     );
@@ -1610,7 +1821,7 @@
     let wait = PROBE_BASE_MS;
     while (!state.abort) {
       if (Date.now() - started > CHALLENGE_GIVE_UP_MS) {
-        setBanner('验证等了太久，先停下。完成后点“重试失败”即可。', 'bad');
+        setBanner('验证超时，队列已停。通过后点“重试失败”。', 'bad');
         log('验证超时，队列停止。', 'bad');
         break;
       }
@@ -1625,7 +1836,7 @@
         return true;
       }
       wait = Math.min(wait + 5000, PROBE_MAX_MS);
-      setBanner('仍在等待验证通过…（已经 ' + Math.round((Date.now() - started) / 1000) + ' 秒）', 'bad');
+      setBanner('等待验证…（' + Math.round((Date.now() - started) / 1000) + ' 秒）', 'bad');
     }
     state.paused = false;
     state.pauseReason = '';
@@ -1680,10 +1891,15 @@
     await loadSettings();
     buildPanel();
     state.mounted = true;
-    renderEmpty('正在读取合集…');
+    setPanelPhase('loading');
+    renderLoading();
     await loadCollection(false).catch((err) => {
-      setBanner('读取合集失败：' + ((err && err.message) || String(err)), 'bad');
-      renderEmpty('读取合集失败，可点“刷新列表”重试。');
+      setPanelPhase('error');
+      if (dom) {
+        dom.sub.textContent = '读取失败';
+        setBanner((err && err.message) || String(err), 'bad');
+      }
+      renderEmpty('无法加载合集。', { action: 'reload', label: '重试', tone: 'bad' });
     });
 
     chrome.storage.onChanged.addListener((changes, area) => {

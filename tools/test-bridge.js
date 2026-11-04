@@ -10,6 +10,7 @@
  *   node tools/test-bridge.js check "Worldly Improvements [vmu2j4]" a.zip
  *   node tools/test-bridge.js idmHistory
  *   node tools/test-bridge.js openFolder
+ *   node tools/test-bridge.js openConfig
  *
  * Set NEXUS_BRIDGE_ALLOW_ANY=1 when the bridge process is started to allow a
  * public test URL that is not in the Nexus allow-list.
@@ -43,6 +44,8 @@ async function main() {
     result = await request('/download', { url, filename, source: 'cli-test' });
   } else if (command === 'openFolder') {
     result = await request('/openFolder', {});
+  } else if (command === 'openConfig') {
+    result = await request('/openConfig', {});
   } else if (command === 'check') {
     const subdir = process.argv[3] || '';
     const names = process.argv.slice(4);
@@ -54,7 +57,7 @@ async function main() {
   } else if (command === 'idmHistory') {
     result = await request('/idmHistory', { force: true });
   } else {
-    console.error('usage: node tools/test-bridge.js <ping|download|check|idmHistory|openFolder> [...]');
+    console.error('usage: node tools/test-bridge.js <ping|download|check|idmHistory|openFolder|openConfig> [...]');
     process.exit(2);
   }
 

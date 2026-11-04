@@ -10,10 +10,43 @@ async function send(message) {
   }
 }
 
-function setMsg(text, ok) {
-  const el = $('manualMsg');
+function setInlineMsg(id, text, ok) {
+  const el = $(id);
+  if (!el) return;
   el.textContent = text || '';
-  el.className = 'msg' + (text ? (ok ? ' ok' : ' bad') : '');
+  el.className = 'inline-msg' + (text ? (ok ? ' ok' : ' bad') : '');
+}
+
+function setNotice(text, title) {
+  const el = $('hostHint');
+  el.textContent = text || '';
+  el.hidden = !text;
+  el.className = 'notice';
+  if (title) el.title = title;
+  else el.removeAttribute('title');
+}
+
+function setStatusState(state, label) {
+  $('statusPill').className = 'status-pill ' + state;
+  $('statusLabel').textContent = label;
+  $('statusDot').className = 'dot';
+}
+
+function setPathText(el, value, fallback) {
+  const text = value || fallback || '—';
+  el.textContent = '';
+  for (const part of text.split(/(?<=[\\/])/)) {
+    el.appendChild(document.createTextNode(part));
+    if (/[\\/]$/.test(part)) el.appendChild(document.createElement('wbr'));
+  }
+  el.title = value || '';
+}
+
+function setSettingsLoading(loading) {
+  const toggles = $('toggles');
+  toggles.setAttribute('aria-busy', loading ? 'true' : 'false');
+  for (const input of toggles.querySelectorAll('input')) input.disabled = loading;
+  $('refreshBtn').disabled = loading;
 }
 
 function fmtTime(timestamp) {
@@ -24,15 +57,44 @@ function fmtTime(timestamp) {
   }
 }
 
+function renderEmptyEvents(list) {
+  const sample = document.createElement('li');
+  sample.className = 'event sample';
+  sample.setAttribute('aria-hidden', 'true');
+
+  const time = document.createElement('span');
+  time.className = 'time';
+  time.textContent = '--:--';
+
+  const main = document.createElement('div');
+  main.className = 'main';
+
+  const title = document.createElement('div');
+  title.className = 'title';
+  title.textContent = '示例：MyMod-1.0.7z';
+
+  const tag = document.createElement('span');
+  tag.className = 'sample-tag';
+  tag.textContent = '示例';
+  title.appendChild(tag);
+
+  const sub = document.createElement('div');
+  sub.className = 'sub';
+  sub.textContent = '已发送到 IDM';
+
+  main.appendChild(title);
+  main.appendChild(sub);
+  sample.appendChild(time);
+  sample.appendChild(main);
+  list.appendChild(sample);
+}
+
 function renderEvents(events) {
   const list = $('eventList');
   list.textContent = '';
 
   if (!Array.isArray(events) || events.length === 0) {
-    const empty = document.createElement('li');
-    empty.className = 'event empty';
-    empty.textContent = '还没有记录。在 Nexus 文件页点一次下载试试。';
-    list.appendChild(empty);
+    renderEmptyEvents(list);
     return;
   }
 
@@ -65,13 +127,27 @@ function renderEvents(events) {
 }
 
 async function refreshStatus() {
-  const dot = $('statusDot');
+  setStatusState('loading', '检测中');
+  setSettingsLoading(true);
+  $('openConfigBtn').disabled = true;
+  $('hostState').textContent = '检测中…';
+  $('hostState').className = 'value';
+  $('idmState').textContent = '—';
+  $('idmState').className = 'value';
+  setNotice('');
 
-  const [ping, settings, events] = await Promise.all([
-    send({ type: 'nd:ping' }),
-    send({ type: 'nd:getSettings' }),
-    send({ type: 'nd:getEvents' })
-  ]);
+  let results;
+  try {
+    results = await Promise.all([
+      send({ type: 'nd:ping' }),
+      send({ type: 'nd:getSettings' }),
+      send({ type: 'nd:getEvents' })
+    ]);
+  } finally {
+    setSettingsLoading(false);
+  }
+
+  const [ping, settings, events] = results;
 
   if (settings && settings.ok) {
     const s = settings.settings;
@@ -82,30 +158,32 @@ async function refreshStatus() {
   }
 
   if (ping && ping.ok) {
-    dot.className = 'dot ok';
+    setStatusState(ping.idmExists ? 'ok' : 'warn', ping.idmExists ? '已连接' : 'IDM 未找到');
     $('hostState').textContent = ping.dryRun ? '已连接 (dry-run)' : '已连接';
     $('hostState').className = 'value ok';
     $('idmState').textContent = ping.idmExists ? '已找到' : '未找到';
     $('idmState').className = 'value ' + (ping.idmExists ? 'ok' : 'bad');
-    $('dirState').textContent = ping.downloadDir || '—';
-    $('dirState').title = ping.downloadDir || '';
-    $('collectionDirState').textContent = ping.collectionRoot || '需重启桥接';
-    $('collectionDirState').title = ping.collectionRoot || '当前桥接版本不支持合集目录，请重启 bridge\\start.ps1';
-    $('hostHint').textContent = ping.idmExists
-      ? ''
-      : 'config.json 里的 idmPath 不存在：' + (ping.idmPath || '');
+    setPathText($('dirState'), ping.downloadDir, '—');
+    setPathText($('collectionDirState'), ping.collectionRoot, '需重启桥接');
+    if (ping.configPath) {
+      $('openConfigBtn').disabled = false;
+      $('openConfigBtn').title = '打开 ' + ping.configPath;
+    } else {
+      $('openConfigBtn').title = '重启桥接后可打开配置文件';
+    }
+    if (!ping.idmExists) {
+      setNotice('IDM 路径无效：' + (ping.idmPath || '未配置'), ping.idmPath || '');
+    }
   } else {
-    dot.className = 'dot bad';
+    setStatusState('bad', '未连接');
     $('hostState').textContent = '未连接';
     $('hostState').className = 'value bad';
     $('idmState').textContent = '—';
     $('idmState').className = 'value';
-    $('dirState').textContent = '—';
-    $('dirState').title = '';
-    $('collectionDirState').textContent = '—';
-    $('collectionDirState').title = '';
-    $('hostHint').textContent = '先启动本地桥接：powershell -File bridge\\start.ps1，然后重试。';
-    if (ping && ping.error) $('hostHint').title = ping.error;
+    setPathText($('dirState'), '', '—');
+    setPathText($('collectionDirState'), '', '—');
+    $('openConfigBtn').title = '启动桥接后可打开配置文件';
+    setNotice('启动本地桥接后点“刷新状态”。', ping && ping.error ? ping.error : '');
   }
 
   if (events && events.ok) renderEvents(events.events);
@@ -113,7 +191,11 @@ async function refreshStatus() {
 
 async function saveToggle(patch) {
   const res = await send({ type: 'nd:setSettings', patch });
-  if (!res || !res.ok) setMsg('保存设置失败：' + ((res && res.error) || '未知错误'), false);
+  if (!res || !res.ok) {
+    setInlineMsg('settingsMsg', '保存失败：' + ((res && res.error) || '未知错误'), false);
+  } else {
+    setInlineMsg('settingsMsg', '', true);
+  }
 }
 
 async function manualSend() {
@@ -121,14 +203,14 @@ async function manualSend() {
   const filename = $('manualName').value.trim();
 
   if (!/^https?:\/\//i.test(url)) {
-    setMsg('请粘贴 http(s) 下载链接', false);
+    setInlineMsg('manualMsg', '请粘贴 http(s) 链接。', false);
     return;
   }
 
   const button = $('sendBtn');
   button.disabled = true;
   button.textContent = '发送中…';
-  setMsg('', true);
+  setInlineMsg('manualMsg', '', true);
 
   const res = await send({ type: 'nd:manual', url, filename });
 
@@ -136,15 +218,60 @@ async function manualSend() {
   button.textContent = '发送';
 
   if (res && res.ok) {
-    setMsg('已发送到 IDM：' + (res.filename || filename || '下载'), true);
+    setInlineMsg('manualMsg', '已发送：' + (res.filename || filename || '下载'), true);
     $('manualUrl').value = '';
     $('manualName').value = '';
   } else {
-    setMsg('失败：' + ((res && res.error) || '未知错误'), false);
+    setInlineMsg('manualMsg', '发送失败：' + ((res && res.error) || '未知错误'), false);
   }
 
   const events = await send({ type: 'nd:getEvents' });
   if (events && events.ok) renderEvents(events.events);
+}
+
+async function openConfigFile() {
+  const button = $('openConfigBtn');
+  const label = button.textContent;
+  button.disabled = true;
+  button.textContent = '打开中…';
+
+  let res = await send({ type: 'nd:openConfig' });
+  // If the extension worker was loaded before nd:openConfig existed, fall back
+  // to the bridge directly so the button still works without a worker reload.
+  const staleWorker = !res || /Receiving end|message port|Could not establish/i.test((res && res.error) || '');
+  if (staleWorker) {
+    try {
+      const response = await fetch('http://127.0.0.1:38765/openConfig', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: '{}',
+        cache: 'no-store'
+      });
+      let data = null;
+      try {
+        data = await response.json();
+      } catch (_) {
+        data = null;
+      }
+      if (!response.ok || !data || !data.ok) {
+        res = { ok: false, error: (data && data.error) || 'HTTP ' + response.status };
+      } else {
+        res = data;
+      }
+    } catch (err) {
+      res = { ok: false, error: (err && err.message) || '本地桥接未响应' };
+    }
+  }
+
+  button.disabled = false;
+  button.textContent = label;
+
+  if (!res || !res.ok) {
+    let reason = (res && res.error) || '扩展后台未响应';
+    if (/Failed to fetch|NetworkError/i.test(reason)) reason = '本地桥接未响应，请重启桥接';
+    if (reason === 'not found') reason = '桥接版本过旧，请运行 start.ps1 -Restart';
+    setNotice('打开配置失败：' + reason);
+  }
 }
 
 async function copyDiagnostic() {
@@ -199,9 +326,13 @@ function bind() {
   $('refreshBtn').addEventListener('click', refreshStatus);
   $('diagBtn').addEventListener('click', copyDiagnostic);
 
+  $('openConfigBtn').addEventListener('click', openConfigFile);
+
   $('openDirBtn').addEventListener('click', async () => {
     const res = await send({ type: 'nd:openFolder' });
-    if (!res || !res.ok) setMsg('打开失败：' + ((res && res.error) || '未知错误'), false);
+    if (!res || !res.ok) {
+      setNotice('打开目录失败：' + ((res && res.error) || '未知错误'));
+    }
   });
 
   $('clearBtn').addEventListener('click', async () => {
@@ -212,5 +343,6 @@ function bind() {
 
 document.addEventListener('DOMContentLoaded', () => {
   bind();
+  renderEvents([]);
   refreshStatus();
 });

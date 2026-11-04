@@ -18,7 +18,7 @@ const idmHistory = require('./idm-history.js');
 
 const VERSION = '0.3.1';
 const ROOT = __dirname;
-const CONFIG_PATH = path.join(ROOT, '..', 'native-host', 'config.json');
+const CONFIG_PATH = path.resolve(ROOT, '..', 'native-host', 'config.json');
 const LOG_FILE = path.join(ROOT, 'bridge.log');
 const PORT = Number(process.env.NEXUS_BRIDGE_PORT || 38765);
 const HOST = '127.0.0.1';
@@ -35,7 +35,7 @@ const DEFAULTS = {
   dryRun: false
 };
 
-const config = loadConfig();
+let config = loadConfig();
 
 function loadConfig() {
   let raw = {};
@@ -52,6 +52,15 @@ function loadConfig() {
     String(process.env.NEXUS_BRIDGE_COLLECTION_ROOT || cfg.collectionRoot || path.join(cfg.downloadDir, 'Collections'))
   );
   return cfg;
+}
+
+/**
+ * The popup's refresh button pings the bridge, and the ping picks up config
+ * edits immediately. This avoids restarting the bridge just to change a path.
+ */
+function reloadConfig() {
+  config = loadConfig();
+  return config;
 }
 
 function log(entry) {
@@ -176,6 +185,7 @@ function readBody(req) {
 // ---------------------------------------------------------------------------
 
 function ping() {
+  reloadConfig();
   return {
     ok: true,
     bridge: VERSION,
@@ -183,6 +193,7 @@ function ping() {
     idmExists: fs.existsSync(config.idmPath),
     downloadDir: config.downloadDir,
     collectionRoot: config.collectionRoot,
+    configPath: CONFIG_PATH,
     allowAnyHost: !!config.allowAnyHost,
     dryRun: !!config.dryRun,
     silent: !!config.silent
@@ -287,6 +298,18 @@ function openFolder(input) {
   return { ok: true, dir };
 }
 
+function openConfig() {
+  if (!fs.existsSync(CONFIG_PATH)) {
+    throw new Error('config.json not found: ' + CONFIG_PATH);
+  }
+  const child = spawn('notepad.exe', [CONFIG_PATH], { detached: true, stdio: 'ignore' });
+  child.on('error', (err) => {
+    log({ event: 'open-config-error', error: String(err && err.message ? err.message : err) });
+  });
+  child.unref();
+  return { ok: true, path: CONFIG_PATH };
+}
+
 // ---------------------------------------------------------------------------
 // http
 // ---------------------------------------------------------------------------
@@ -309,13 +332,14 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
-    if (req.method === 'POST' && (req.url === '/download' || req.url === '/check' || req.url === '/idmHistory' || req.url === '/openFolder')) {
+    if (req.method === 'POST' && (req.url === '/download' || req.url === '/check' || req.url === '/idmHistory' || req.url === '/openFolder' || req.url === '/openConfig')) {
       const body = await readBody(req);
       const input = body ? JSON.parse(body) : {};
       let result;
       if (req.url === '/download') result = download(input);
       else if (req.url === '/check') result = check(input);
       else if (req.url === '/idmHistory') result = await history(input);
+      else if (req.url === '/openConfig') result = openConfig();
       else result = openFolder(input);
       writeJson(res, 200, result);
       return;

@@ -641,6 +641,10 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       callBridge('/openFolder', {}).then(sendResponse);
       return true;
 
+    case 'nd:openConfig':
+      callBridge('/openConfig', {}).then(sendResponse);
+      return true;
+
     case 'nd:getSettings':
       getSettings().then((settings) => sendResponse({ ok: true, settings }));
       return true;

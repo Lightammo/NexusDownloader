@@ -9,82 +9,134 @@
 <body>
   <header class="top">
     <div class="brand">
-      <span class="logo">N</span>
+      <span class="logo" aria-hidden="true">N</span>
       <div class="brand-text">
         <h1>Nexus Downloader</h1>
-        <p>IDM 接管 · 集合批量下载 v0.3.1</p>
+        <p>v0.3.1 · IDM 接管</p>
       </div>
     </div>
-    <span id="statusDot" class="dot bad" title="原生宿主状态"></span>
+    <div id="statusPill" class="status-pill loading" role="status">
+      <span id="statusDot" class="dot" aria-hidden="true"></span>
+      <span id="statusLabel">检测中</span>
+    </div>
   </header>
 
-  <section class="card status">
-    <div class="row">
-      <span class="label">本地桥接</span>
-      <b id="hostState" class="value">检测中…</b>
+  <section class="card status" aria-label="连接状态">
+    <div class="status-grid">
+      <div class="status-item">
+        <span class="label">本地桥接</span>
+        <b id="hostState" class="value">检测中…</b>
+      </div>
+      <div class="status-item">
+        <span class="label">IDM</span>
+        <b id="idmState" class="value">—</b>
+      </div>
     </div>
-    <div class="row">
-      <span class="label">IDM</span>
-      <b id="idmState" class="value">—</b>
+    <div class="path-row">
+      <span class="label">下载到</span>
+      <span id="dirState" class="value path" title="">—</span>
     </div>
-    <div class="row">
-      <span class="label">保存到</span>
-      <b id="dirState" class="value path" title="">—</b>
+    <div class="path-row">
+      <span class="label">合集目录</span>
+      <span id="collectionDirState" class="value path" title="">—</span>
     </div>
-    <div class="row">
-      <span class="label">合集根目录</span>
-      <b id="collectionDirState" class="value path" title="">—</b>
+    <div class="config-row">
+      <span class="config-hint">修改配置后点“刷新状态”</span>
+      <button id="openConfigBtn" class="mini" type="button" title="打开 native-host/config.json" disabled>打开配置文件</button>
     </div>
-    <p id="hostHint" class="hint"></p>
+    <p id="hostHint" class="notice" role="status" hidden></p>
   </section>
 
-  <section class="toggles">
-    <label class="switch">
-      <span>启用接管</span>
-      <input id="enabled" type="checkbox">
-      <i></i>
-    </label>
-    <label class="switch">
-      <span>点 Manual download 直接下载</span>
-      <input id="clickDownload" type="checkbox">
-      <i></i>
-    </label>
-    <label class="switch">
-      <span>自动拦截 Nexus 下载</span>
-      <input id="autoIntercept" type="checkbox">
-      <i></i>
-    </label>
-    <label class="switch">
-      <span>开发者模式：拦截所有下载</span>
-      <input id="devAllDownloads" type="checkbox">
-      <i></i>
-    </label>
-  </section>
-
-  <section class="manual">
-    <label class="section-title" for="manualUrl">手动发送下载链接</label>
-    <input id="manualUrl" class="text" type="url" spellcheck="false" placeholder="https://cf-files.nexusmods.com/cdn/...">
-    <div class="manual-row">
-      <input id="manualName" class="text" type="text" spellcheck="false" placeholder="文件名（可选）">
-      <button id="sendBtn" class="primary">发送</button>
+  <section class="block">
+    <div class="section-head">
+      <h2 class="section-title">接管规则</h2>
+      <span class="section-note">修改后即时生效</span>
     </div>
-    <p id="manualMsg" class="msg"></p>
+    <div id="toggles" class="toggles">
+      <label class="switch">
+        <span class="switch-copy">
+          <span class="switch-title">启用接管</span>
+          <span class="switch-desc">关闭后扩展不介入 Nexus 下载</span>
+        </span>
+        <span class="switch-control">
+          <input id="enabled" type="checkbox" checked>
+          <i aria-hidden="true"></i>
+        </span>
+      </label>
+      <label class="switch">
+        <span class="switch-copy">
+          <span class="switch-title">Manual download 直接下载</span>
+          <span class="switch-desc">点击文件页按钮时交给 IDM，不打开新页面</span>
+        </span>
+        <span class="switch-control">
+          <input id="clickDownload" type="checkbox" checked>
+          <i aria-hidden="true"></i>
+        </span>
+      </label>
+      <label class="switch">
+        <span class="switch-copy">
+          <span class="switch-title">自动拦截 Nexus 下载</span>
+          <span class="switch-desc">捕获页面发起的文件下载请求</span>
+        </span>
+        <span class="switch-control">
+          <input id="autoIntercept" type="checkbox" checked>
+          <i aria-hidden="true"></i>
+        </span>
+      </label>
+
+      <details class="advanced">
+        <summary>高级设置</summary>
+        <label class="switch">
+          <span class="switch-copy">
+            <span class="switch-title">拦截所有站内下载</span>
+            <span class="switch-desc">调试用；会影响当前站点的普通下载</span>
+          </span>
+          <span class="switch-control">
+            <input id="devAllDownloads" type="checkbox">
+            <i aria-hidden="true"></i>
+          </span>
+        </label>
+      </details>
+    </div>
+    <p id="settingsMsg" class="inline-msg" role="status"></p>
   </section>
 
-  <section class="events">
+  <details class="tool" id="manualTool">
+    <summary>
+      <span class="tool-mark" aria-hidden="true">↗</span>
+      <span class="tool-heading">
+        <span class="tool-title">发送单条链接</span>
+        <span class="tool-sub">把 CDN 链接直接交给 IDM</span>
+      </span>
+      <span class="tool-chevron" aria-hidden="true"></span>
+    </summary>
+    <div class="tool-body">
+      <label class="sr-only" for="manualUrl">下载链接</label>
+      <input id="manualUrl" class="text" type="url" spellcheck="false" placeholder="粘贴 CDN 下载链接">
+      <p class="example">示例：<code>https://cf-files.nexusmods.com/cdn/...</code></p>
+      <div class="manual-row">
+        <label class="sr-only" for="manualName">文件名（可选）</label>
+        <input id="manualName" class="text" type="text" spellcheck="false" placeholder="文件名（可选）">
+        <button id="sendBtn" class="primary" type="button">发送</button>
+      </div>
+      <p id="manualMsg" class="inline-msg" role="status"></p>
+    </div>
+  </details>
+
+  <section class="events block">
     <div class="events-head">
-      <span class="section-title">最近记录</span>
+      <h2 class="section-title">最近记录</h2>
       <span class="events-actions">
-        <button id="diagBtn" class="link">复制诊断</button>
-        <button id="clearBtn" class="link">清空</button>
+        <button id="diagBtn" class="link" type="button">复制诊断</button>
+        <button id="clearBtn" class="link" type="button">清空记录</button>
       </span>
     </div>
     <ul id="eventList" class="event-list"></ul>
   </section>
 
   <footer class="bottom">
-    <button id="refreshBtn" class="ghost">刷新状态</button>
-    <button id="openDirBtn" class="ghost">打开下载目录</button>
+    <button id="refreshBtn" class="ghost" type="button">刷新状态</button>
+    <button id="openDirBtn" class="ghost" type="button">打开下载目录</button>
   </footer>
 
   <script src="popup.js"></script>

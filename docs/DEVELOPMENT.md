@@ -384,6 +384,7 @@ IDM 历史（注册表 / 日志）只用于**去重**（“这个文件以前下
 | `nd:resolveFileName` | content → background | fileId → 文件名 |
 | `nd:log` | content → background | 页面失败/诊断事件 |
 | `nd:openFolder` | popup → background | 打开下载目录 |
+| `nd:openConfig` | popup → background | 打开 `native-host/config.json` |
 | `nd:getSettings` / `nd:setSettings` | popup → background | 读写设置 |
 | `nd:getEvents` / `nd:clearEvents` | popup → background | 最近记录 |
 | `nd:collectionResolve` | collection → background | `{gameDomain, slug, revision?, force?}` → 归一化列表（GraphQL v2） |
@@ -447,11 +448,12 @@ IDM 历史（注册表 / 日志）只用于**去重**（“这个文件以前下
 
 | 方法 | 路径 | Body | 返回 |
 |---|---|---|---|
-| `GET` | `/ping` | — | `{ ok, bridge, idmPath, idmExists, downloadDir, collectionRoot, … }` |
+| `GET` | `/ping` | — | `{ ok, bridge, idmPath, idmExists, downloadDir, collectionRoot, configPath, … }`；每次调用重新读取 `config.json` |
 | `POST` | `/download` | `{ url, filename?, referrer?, source?, subdir?, onExisting?: 'skip'\|'replace' }` | `{ ok, id, filename, dir, skipped?:'disk', command }` |
 | `POST` | `/check` | `{ subdir?, names: [] }` | `{ ok, dir, exists, files: { name: { exists, size, mtimeMs } } }` |
 | `POST` | `/idmHistory` | `{ force? }` | `{ ok, records: [], counts, error }` |
 | `POST` | `/openFolder` | `{ subdir? }` | `{ ok, dir }` |
+| `POST` | `/openConfig` | — | `{ ok, path }`；用记事本打开 `native-host/config.json` |
 
 `subdir` 只接受 `collectionRoot` 下的相对路径（1–3 段、无盘符/UNC/`..`，且每段必须等于
 `sanitizeSegment()` 的结果），最终 `path.resolve` 必须仍在 root 之下。
@@ -482,7 +484,7 @@ CORS：`*`；支持 `Access-Control-Allow-Private-Network: true`；OPTIONS 返�
 - `NEXUS_BRIDGE_PORT` 可改端口（扩展写死 38765，一般不改）。改端口要同时改 `extension/background.js` 的 `BRIDGE_URL` 和 `extension/manifest.json` 的 `host_permissions`，并重新加载扩展。
 - `NEXUS_BRIDGE_DRY_RUN=1` / `NEXUS_BRIDGE_COLLECTION_ROOT=…` 仅测试用。
 - `NEXUS_BRIDGE_DEBUG=1` 把日志同时写到 stderr。
-- 改配置后必须重启桥接进程。
+- 改配置后打开扩展弹窗点“刷新状态”即可重新读取；桥接版本较旧时先运行 `.\bridge\start.ps1 -Restart`。
 
 ### 6.3 IDM 命令行
 

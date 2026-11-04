@@ -105,7 +105,7 @@ Copy-Item .\native-host\config.example.json .\native-host\config.json
 - `collectionRoot`：合集目录的根；建议显式填写，避免和单文件目录混在一起。
 - `allowedHosts`：允许交给 IDM 的域名，保持默认即可。
 
-> `config.json` 是本机文件，已被 `.gitignore` 忽略，不会提交。修改后必须重启桥接才会生效。
+> `config.json` 是本机文件，已被 `.gitignore` 忽略，不会提交。修改后打开扩展弹窗点“刷新状态”即可生效；如果桥接还是旧版本，先运行 `.\bridge\start.ps1 -Restart` 重启一次。
 
 3. 启动：
 
@@ -129,6 +129,7 @@ node .\tools\test-bridge.js ping
   "idmExists": true,
   "downloadDir": "C:\\Users\\YourName\\Downloads\\Nexus",
   "collectionRoot": "C:\\Users\\YourName\\Downloads\\Nexus\\Collections",
+  "configPath": "C:\\...\\native-host\\config.json",
   "allowAnyHost": false,
   "dryRun": false,
   "silent": true
@@ -300,7 +301,7 @@ Get-Content .\bridge\bridge.log -Tail 5
 | 现象 | 可能原因 | 处理 |
 |---|---|---|
 | 扩展弹窗显示“本地桥接：未连接” | 桥接没启动、端口被占、Node 不在 PATH | 运行 `.\bridge\start.ps1`；`node .\tools\test-bridge.js ping`；检查 38765 端口 |
-| 弹窗显示“IDM：未找到” | `config.json` 里的 `idmPath` 不对 | 改成 `IDMan.exe` 的实际路径，重启桥接 |
+| 弹窗显示“IDM：未找到” | `config.json` 里的 `idmPath` 不对 | 改成 `IDMan.exe` 的实际路径，刷新状态 |
 | toast 说“已交给 IDM”，但文件不出现 | IDM 在等确认弹窗；IDM 队列慢；IDM 扩展抢了下载 | 运行 `tools\configure-idm.ps1`；在 IDM 队列里查看；暂时关闭 IDM Integration Module |
 | toast 说“没有找到 file_id” | 页面结构变了，或扩展重载后没刷新页面 | 刷新 Nexus 页面；点弹窗“复制诊断”；见开发文档第 4 节 |
 | toast 说“Nexus 没有返回下载链接” | 未登录、Cloudflare 验证、免费账号限速 | 登录 Nexus；完成页面验证；等一会儿再点 |
