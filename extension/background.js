@@ -14,7 +14,7 @@
  * bridge's disk + IDM history, and for each hand-off to the bridge.
  */
 
-importScripts('lib/collection-utils.js');
+importScripts('lib/collection-utils.js', 'lib/challenge-utils.js');
 
 const BRIDGE_URL = 'http://127.0.0.1:38765';
 const MAX_EVENTS = 20;
@@ -439,6 +439,96 @@ async function saveCollectionJob(job) {
 }
 
 // ---------------------------------------------------------------------------
+// collection verification tab
+// ---------------------------------------------------------------------------
+//
+// window.open() from a content script is popup-blocked once the queue has been
+// running for a while: the user gesture that started it is gone. Opening the
+// tab here always works, and chrome.tabs.get() lets the panel watch the page
+// load and close it as soon as Cloudflare stops asking. No new permission is
+// needed: the host permission for nexusmods.com already exposes url/title/status.
+
+function isNexusCheckUrl(rawUrl) {
+  return NexusChallenge.isNexusUrl(String(rawUrl || ''));
+}
+
+function tabSnapshot(tab) {
+  if (!tab) return null;
+  return {
+    id: tab.id,
+    windowId: tab.windowId,
+    active: !!tab.active,
+    status: tab.status || '',
+    title: tab.title || '',
+    url: tab.url || '',
+    pendingUrl: tab.pendingUrl || ''
+  };
+}
+
+async function openCheckTab(rawUrl, active) {
+  if (!isNexusCheckUrl(rawUrl)) return { ok: false, error: '验证页必须是 nexusmods.com 地址' };
+  try {
+    const tab = await chrome.tabs.create({ url: rawUrl, active: !!active });
+    return { ok: true, tabId: tab.id, windowId: tab.windowId, tab: tabSnapshot(tab) };
+  } catch (err) {
+    return { ok: false, error: (err && err.message) || String(err) };
+  }
+}
+
+async function getCheckTab(tabId) {
+  try {
+    const tab = await chrome.tabs.get(Number(tabId));
+    return { ok: true, tab: tabSnapshot(tab) };
+  } catch (err) {
+    return { ok: false, error: (err && err.message) || String(err) };
+  }
+}
+
+async function navigateCheckTab(tabId, rawUrl) {
+  if (!isNexusCheckUrl(rawUrl)) return { ok: false, error: '验证页必须是 nexusmods.com 地址' };
+  try {
+    const tab = await chrome.tabs.update(Number(tabId), { url: rawUrl });
+    return { ok: true, tab: tabSnapshot(tab) };
+  } catch (err) {
+    return { ok: false, error: (err && err.message) || String(err) };
+  }
+}
+
+async function probeCheckTab(tabId) {
+  try {
+    const probe = await chrome.tabs.sendMessage(Number(tabId), { type: 'nd:challengeProbe' });
+    return { ok: true, probe: probe || null };
+  } catch (err) {
+    return { ok: false, error: (err && err.message) || String(err) };
+  }
+}
+
+async function focusCheckTab(tabId) {
+  try {
+    const tab = await chrome.tabs.update(Number(tabId), { active: true });
+    if (tab && tab.windowId != null) {
+      try {
+        await chrome.windows.update(tab.windowId, { focused: true });
+      } catch (_) {
+        /* the window may already be focused */
+      }
+    }
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: (err && err.message) || String(err) };
+  }
+}
+
+async function closeCheckTab(tabId) {
+  try {
+    await chrome.tabs.remove(Number(tabId));
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: (err && err.message) || String(err) };
+  }
+}
+
+// ---------------------------------------------------------------------------
 // download interception
 // ---------------------------------------------------------------------------
 
@@ -715,6 +805,34 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 
     case 'nd:collectionOpenFolder':
       callBridge('/openFolder', { subdir: String(message.subdir || '') }).then(sendResponse);
+      return true;
+
+    // -----------------------------------------------------------------------
+    // Cloudflare verification tab
+    // -----------------------------------------------------------------------
+
+    case 'nd:checkTabOpen':
+      openCheckTab(String(message.url || ''), !!message.active).then(sendResponse);
+      return true;
+
+    case 'nd:checkTabGet':
+      getCheckTab(message.tabId).then(sendResponse);
+      return true;
+
+    case 'nd:checkTabNavigate':
+      navigateCheckTab(message.tabId, String(message.url || '')).then(sendResponse);
+      return true;
+
+    case 'nd:checkTabProbe':
+      probeCheckTab(message.tabId).then(sendResponse);
+      return true;
+
+    case 'nd:checkTabFocus':
+      focusCheckTab(message.tabId).then(sendResponse);
+      return true;
+
+    case 'nd:checkTabClose':
+      closeCheckTab(message.tabId).then(sendResponse);
       return true;
 
     default:

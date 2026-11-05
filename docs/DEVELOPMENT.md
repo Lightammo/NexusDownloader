@@ -1,7 +1,7 @@
 # Nexus Downloader 开发文档
 
-> 适用版本：**v0.3.1**（extension / bridge 同版本）
-> 最后更新：2026-11-04
+> 适用版本：**v0.3.2**（extension / bridge 同版本）
+> 最后更新：2026-11-05
 > 面向：维护者、二次开发、排查 Nexus 页面变化
 > 文档分工：README 负责安装、联调、排错、卸载；本文负责架构、接口、实现细节、测试与发布。
 
@@ -51,6 +51,7 @@ Chrome/Edge (MV3)
 | `extension/lib/nexus-utils.js` | 纯函数：uid、JSON/HTML 解析、文件名、Generate body | 与 content 一起加载 |
 | `extension/lib/collection-utils.js` | 纯函数：合集路径、GraphQL 归一化、Windows 命名、去重身份 | content / SW / bridge 共用 |
 | `extension/lib/queue-pacing.js` | 纯函数：等待、退避、`Retry-After`、冷却 | content 加载 |
+| `extension/lib/challenge-utils.js` | 纯函数：验证标签页状态、自动等待/置前、预热门槛 | content / SW / 测试共用 |
 | `extension/lib/file-link.js` | 按 fileId 换直链（一键与合集共用） | content 加载 |
 | `extension/background.js` | 消息路由、GraphQL、合集去重、台账、桥接调用 | MV3 service worker，可休眠 |
 | `bridge/server.js` | 常驻 Node 进程，校验并启动 IDM | 独立进程，开机启动可选 |
@@ -114,9 +115,12 @@ Chrome/Edge (MV3)
 | `extension/lib/queue-pacing.js` | `computeGapMs` | 固定下发间隔（默认 5s，2s 下限），隐藏标签页 ×3；不做大小/速度估算 |
 | | `normalizeConcurrent` / `diskWaitMs` | 并发上限归一化（1–5）；下发后 8s 快速落盘观察 |
 | | `retryDelayMs` / `nextCooldown` | 1.5s→30s 等量抖动；30s→600s 共享冷却 |
+| `extension/lib/challenge-utils.js` | `tabState` | 标签页快照 + DOM 探针 → clear / challenge / loading / error / gone；超过 12s 标 `escalate` |
+| | `shouldWarmUp` / `pollDelayMs` | ≥5 个文件才预热；加载中 700ms、其余 1s 轮询 |
 | `extension/collection.js` | `loadCollection` / `runPreflight` | 拉列表、三源去重、恢复作业 |
 | | `startQueue` / `processItem` | 队列主循环、单条下发、落盘确认 |
-| | `handleChallenge` | 挑战：停在那条、开验证页、探针、自动续跑 |
+| | `handleChallenge` | 挑战：后台标签页 → 自动等待/置前 → 真实请求重试；不再用 HEAD 探针 |
+| | `warmUpSession` | 批次开始前加载一次文件页（≥5 项，最多 8s） |
 | `extension/lib/nexus-utils.js` | `normalizeFileId` | uid → file_id |
 | | `payloadFileId` / `selectPayloadForFile` | 从文件 JSON 取 id、按 file_id 选条目 |
 | | `parseDownloadUrlResponse` | JSON / HTML / `data-download-url` |
@@ -291,8 +295,10 @@ query CollectionRevision($slug, $domainName, $revision, $adult)
 | 小文件优先 | 开 | |
 | 批次确认 | >50 个文件 | |
 
-遇到挑战：队列停在该文件（不跳过、不推进），打开该 mod 的页面（不带 `file_id`）让用户过验证，
-同源 `HEAD` 探针每 5s 递增到 30s 检测恢复，通过后从同一条继续；30 分钟未恢复则停止。
+遇到挑战：队列停在该文件（不跳过、不推进），由 service worker 用 `chrome.tabs.create({active:false})`
+在后台打开该 mod 的文件页；合集页每 0.7–1s 轮询标签页状态 + DOM 探针，标签页干净后关闭它并直接重试
+真实请求（不再用 HEAD 探针）。12 秒还没过就自动切到前台，用户点一次勾选框后自动关闭并继续；
+30 分钟未恢复 / 标签页被关闭 / 加载失败才停止。实现细节见 `lib/challenge-utils.js`。
 
 **完成判定（磁盘是唯一真相）**：IDM 没有可用的状态接口，而且它可能在自己的队列里排几十秒才把文件
 移到目标目录。所以完成状态不看 IDM 日志/注册表，而是：
@@ -369,7 +375,8 @@ IDM 历史（注册表 / 日志）只用于**去重**（“这个文件以前下
 | `collectionDuplicatePolicy` | `'skip'` | 合集：重复项 `skip` / `ask` |
 | `collectionUseIdmHistory` | `true` | 合集：把 IDM 历史算作重复 |
 | `collectionSmallestFirst` | `true` | 合集：小文件先下 |
-| `collectionOpenCheckPage` | `true` | 合集：遇到验证时自动打开 mod 页 |
+| `collectionOpenCheckPage` | `true` | 合集：遇到验证时自动开后台标签页并等待通过；关掉则只提示 |
+| `collectionWarmup` | `true` | 合集：≥5 个文件时，开始前预热一次文件页（最多 8s） |
 | `collectionFolderSuffix` | `true` | 合集：目录名带 `[slug]` |
 
 ### 5.2 消息
@@ -393,6 +400,10 @@ IDM 历史（注册表 / 日志）只用于**去重**（“这个文件以前下
 | `nd:collectionPoll` | collection → background | `{subdir, names}` → 磁盘落盘状态 |
 | `nd:collectionJobGet` / `nd:collectionJobSet` / `nd:collectionJobClear` | collection → background | 作业持久化（`chrome.storage.local.collectionJobs`） |
 | `nd:collectionOpenFolder` | collection/popup → background | 打开合集目录 |
+| `nd:checkTabOpen` / `nd:checkTabGet` / `nd:checkTabNavigate` | collection → background | 打开 / 读取 / 重新加载后台验证标签页（`chrome.tabs.*`） |
+| `nd:checkTabProbe` | collection → background → 验证页 | 让验证页的内容脚本返回 `{challenge, turnstile, readyState}` |
+| `nd:checkTabFocus` / `nd:checkTabClose` | collection → background | 把验证页切到前台 / 关闭 |
+| `nd:challengeProbe` | background → content | 内容脚本内部消息，返回 DOM 探针结果 |
 
 `nd:clickDownload` 的 payload：
 
@@ -599,6 +610,7 @@ PowerShell 5.1。完整的组件安装与联调步骤见 [README](../README.md)�
 node tools\test-nexus-utils.js
 node tools\test-collection-utils.js
 node tools\test-queue-pacing.js
+node tools\test-challenge-utils.js
 node tools\test-idm-history.js
 node tools\print-collection.js monsterhunterworld vmu2j4
 node --check extension\content.js
@@ -607,6 +619,7 @@ node --check extension\background.js
 node --check extension\lib\nexus-utils.js
 node --check extension\lib\collection-utils.js
 node --check extension\lib\queue-pacing.js
+node --check extension\lib\challenge-utils.js
 node --check extension\lib\file-link.js
 node --check extension\popup.js
 node --check bridge\server.js
@@ -614,7 +627,7 @@ node --check bridge\idm-history.js
 ```
 
 当前单测：`test-nexus-utils` 17 项、`test-collection-utils` 22 项、`test-queue-pacing` 11 项、
-`test-idm-history` 8 项。`print-collection.js` 只依赖公开 GraphQL，是"schema 变了"的哨兵。
+`test-challenge-utils` 10 项、`test-idm-history` 8 项。`print-collection.js` 只依赖公开 GraphQL，是"schema 变了"的哨兵。
 
 ### 9.2 手动回归矩阵
 
@@ -636,7 +649,8 @@ node --check bridge\idm-history.js
 | 合集并发 | 把并发设为 1 / 3 分别验证：待落盘数量不超过设置 |
 | 合集刷新页面 | 提示恢复进度，已完成项不重下 |
 | 合集遇到 429 | 全体冷却倒计时，结束后自动继续 |
-| 合集遇到验证 | 停在该条 + 打开验证页，通过后自动续跑 |
+| 合集遇到验证 | 后台打开验证页；非交互式自动过、自动关、重试同一条；交互式 12s 后切到前台，点一次后自动续跑 |
+| 手动关闭验证页 | 队列停止并提示，不会无限等待 |
 
 ---
 
@@ -653,7 +667,7 @@ node --check bridge\idm-history.js
 | 合集列表读不到 | `node tools\print-collection.js <game> <slug>`；成人内容要传 `viewAdultContent` |
 | 合集项显示不可下载 | `file` 为空（外部来源）或 `category=REMOVED`；Nexus 上确实没了 |
 | 合集停在「限速冷却」 | 429；等冷却结束，或把面板里的“下发间隔”调大、降低“最大同时下载数” |
-| 合集要求人机验证 | 在自动打开的 mod 页完成验证；通过后自动继续，30 分钟未通过会停 |
+| 合集要求人机验证 | 后台验证页会自动打开；12 秒后仍没通过会切到前台，点一次勾选框即可；30 分钟未通过会停 |
 | IDM 没开始 | IDM 弹窗设置、IDM Integration Module 是否抢下载 |
 | 页面按钮无反应 | 广告拦截/页面脚本报错；看 F12 Console |
 
@@ -672,7 +686,7 @@ node --check bridge\idm-history.js
 
 - [ ] `manifest.json` 版本、`bridge/server.js` 的 `VERSION`、popup 显示版本一致。
 - [ ] `node tools\test-nexus-utils.js` 全过。
-- [ ] `node tools\test-collection-utils.js`、`test-queue-pacing.js`、`test-idm-history.js` 全过。
+- [ ] `node tools\test-collection-utils.js`、`test-queue-pacing.js`、`test-challenge-utils.js`、`test-idm-history.js` 全过。
 - [ ] 所有 JS `node --check` 通过。
 - [ ] 重新加载扩展 + 刷新 Nexus 页面（文件页和合集页各一次）。
 - [ ] 主文件 / ARCHIVED / 顶部按钮 / 下载页按钮 四条路径手测。
@@ -694,6 +708,7 @@ node --check bridge\idm-history.js
 | 3 | 桥接无鉴权，只监听 `127.0.0.1` | 任何本机页面理论上都能 POST；`allowedHosts` 是唯一限制，不要暴露端口 |
 | 4 | 扩展 ID 由 `manifest.json` 的 `key` 固定 | 改 key 后必须重跑 `native-host/install.ps1` 更新 `allowed_origins`；桥接方式不受影响 |
 | 5 | content script 只注入顶层 frame，`document_start` | Nexus 下载控件目前都在顶层；若站点改到 iframe，需要加 `all_frames` 并重新验证 |
+| 6 | 交互式 Cloudflare Turnstile 无法自动点 | 后台标签页会自动打开并在 12s 后切到前台；managed challenge 可全自动，交互式仍需用户点一次 |
 | 6 | 扩展“重新加载”不会向已打开页面重新注入脚本 | 必须刷新 Nexus 页面 |
 | 7 | MV3 service worker 会休眠 | `recent` 去重 Map 只存在内存；持久状态必须写 `chrome.storage.local` |
 | 8 | 合集队列在 content script 里 | 关闭合集标签页会停止队列；重开会恢复进度，点“继续”继续 |

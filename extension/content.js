@@ -1014,12 +1014,59 @@
   }
 
   // -------------------------------------------------------------------------
+  // Cloudflare challenge probe (used by the collection verification tab)
+  // -------------------------------------------------------------------------
+
+  function probeChallengeDocument() {
+    const title = document.title || '';
+    const titleChallenge = /just a moment|attention required|checking your browser|verify(?:ing)? you are human|请稍候|正在验证|安全验证/i.test(
+      title
+    );
+    let form = false;
+    let turnstile = false;
+    try {
+      form = !!document.querySelector(
+        '#challenge-form, #cf-challenge-running, .cf-browser-verification, #cf-please-wait, #challenge-stage'
+      );
+      const widget = document.querySelector('iframe[src*="challenges.cloudflare.com"], .cf-turnstile');
+      if (widget) {
+        const rect = widget.getBoundingClientRect();
+        turnstile = rect.width > 0 && rect.height > 0;
+      }
+    } catch (_) {
+      /* ignore a transient DOM state */
+    }
+    return {
+      ok: true,
+      title,
+      href: location.href,
+      readyState: document.readyState,
+      challenge: titleChallenge || form,
+      turnstile
+    };
+  }
+
+  // -------------------------------------------------------------------------
   // lifecycle
   // -------------------------------------------------------------------------
 
   function start() {
     window.addEventListener('click', handleDownloadClick, true);
     window.addEventListener('auxclick', handleDownloadClick, true);
+
+    try {
+      chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+        if (!message || message.type !== 'nd:challengeProbe') return false;
+        try {
+          sendResponse(probeChallengeDocument());
+        } catch (err) {
+          sendResponse({ ok: false, error: (err && err.message) || String(err) });
+        }
+        return false;
+      });
+    } catch (_) {
+      /* extension context invalidated */
+    }
 
     const runAuto = () => {
       delay(800).then(maybeAutoStart).catch(() => {});

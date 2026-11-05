@@ -16,7 +16,7 @@ const { spawn } = require('child_process');
 const Collection = require('../extension/lib/collection-utils.js');
 const idmHistory = require('./idm-history.js');
 
-const VERSION = '0.3.1';
+const VERSION = '0.3.2';
 const ROOT = __dirname;
 const CONFIG_PATH = path.resolve(ROOT, '..', 'native-host', 'config.json');
 const LOG_FILE = path.join(ROOT, 'bridge.log');

@@ -1,11 +1,21 @@
 # Collections 批量下载 — 需求梳理与开发计划
 
-> 状态：**已实现（v0.3.1）**，本文保留为设计记录与参数依据
-> 目标版本：v0.3.1（extension / bridge 同步）
-> 最后更新：2026-11-04
+> 状态：**已实现（v0.3.2）**，本文保留为设计记录与参数依据
+> 目标版本：v0.3.2（extension / bridge 同步）
+> 最后更新：2026-11-05
 > 实验样本：<https://www.nexusmods.com/games/monsterhunterworld/collections/vmu2j4>（Worldly Improvements，5 个 mod）
 > 实现位置：`extension/collection.js`、`extension/lib/collection-utils.js`、`extension/lib/queue-pacing.js`、
-> `extension/lib/file-link.js`、`bridge/idm-history.js`、`bridge/server.js`；测试见 `tools/test-collection-utils.js` 等。
+> `extension/lib/challenge-utils.js`、`extension/lib/file-link.js`、`bridge/idm-history.js`、`bridge/server.js`；
+> 测试见 `tools/test-collection-utils.js` 等。
+
+> **v0.3.2 变更（以本节为准）**
+> 1. 验证处理改为**后台受控标签页**：由 service worker 用 `chrome.tabs.create` 打开，
+>    不再用内容脚本里的 `window.open`（异步队列里会被弹窗拦截，验证页经常根本没打开）。
+> 2. 删掉 `HEAD` 探针，改为**等待标签页变干净后直接重试真实请求**；只有真实请求成功才算恢复。
+> 3. 自动等待 12 秒：非交互式 managed challenge 自动通过；超过 12 秒自动把标签页切到前台，
+>    用户点一次勾选框后自动关闭并继续。30 分钟未通过才停止。
+> 4. 新增“开始前预热会话”（默认开，≥5 个文件时生效），减少第一个文件就撞验证。
+> 5. 不改写 `cf_clearance`、不接打码平台、不做指纹伪装；交互式 Turnstile 仍然需要用户点一次。
 
 > **v0.3.1 变更（以本节为准）**
 > 1. 删除“估算速度/传输时间”参数：下发节奏改成**固定间隔秒数**（默认 5s，2s 下限，隐藏标签页 ×3），网速与配置无关。
@@ -21,7 +31,7 @@
 1. **Mod 列表可以可靠拿到，不需要爬 HTML。** Nexus 的公开 GraphQL v2（`https://api.nexusmods.com/v2/graphql`）提供 `collectionRevision(slug, revision, viewAdultContent)`，一次返回合集里全部 `modFiles`（modId / fileId / 文件名 uri / 版本 / 大小 / optional / 分类）。实测 2444 个 mod 的合集一次查询 2.7s / 830KB 返回完毕，无分页问题。
 2. **下载直链仍然只能在页面里换。** 官方 REST v1 的 `download_link.json` 对非 Premium 直接 403（`You don't have permission to get download links from the API without visiting nexusmods.com`）；而服务端抓 HTML 会被 Cloudflare 拦（本次实测 `GET /games/monsterhunterworld/collections/vmu2j4` → **HTTP 403 "Just a moment..."**）。所以沿用现有架构：**在已登录、已过验证的页面上下文里 `POST GenerateDownloadUrl`**，再把直链交给桥接 → IDM。
    > **本机账号是免费账号**（已确认），所以连"Premium + API key 快路径"这个选项都不存在：页面换链是唯一路线，节奏/限速必须当作一等公民来做，见 §6.1。
-3. **Cloudflare 不存在稳定的"绕过"手段，但可以做"不触发 + 自动恢复"。** 关键是把所有 Nexus 请求都放在页面内、串行、带抖动间隔；一旦识别到挑战就立刻暂停队列，用定时探针（不是整页刷新）检测会话恢复后自动续跑。这部分在 §6 详细设计。
+3. **Cloudflare 不存在稳定的"绕过"手段，但可以做"不触发 + 自动恢复"。** 关键是把所有 Nexus 请求都放在页面内、串行、带抖动间隔；一旦识别到挑战就立刻暂停队列，用后台受控标签页完成验证，再直接重试真实请求（不是整页刷新）。这部分在 §6 详细设计。
 4. **去重不能靠 URL。** 每次生成的 CDN 直链 `md5`/`expires` 都不同。可行且已验证的身份是：`gameId:modId:fileId`（我们自己记）、`uri` 文件名（Nexus 的原始压缩包名）、`h=` 查询参数（实测同一文件多次生成的链接 `h` 不变，疑似文件内容指纹）。IDM 侧的历史记录可从注册表 `HKCU\Software\DownloadManager\<id>` 和 `%APPDATA%\IDM\DwnlData\*\log_*.log` 读出（见 §5）。
 5. **架构选择：队列引擎放在 content script。** 因为换链接必须在页面里、必须带页面 Cookie 与页面上下文，把队列放到 service worker 只会多一层 IPC 和 MV3 生命周期坑。代价是"下载期间不能关标签页"，用持久化 + 断点续跑解决。
 6. **下发节奏是安全性的核心（参考 nexusmods-bypass 的做法）。** 不做"一次性全部下发"：换一个链接、交给 IDM、等它落盘（或超时）+ 额外 N 秒，再换下一个；429 全体共享冷却；Cloudflare 立刻停在那一条上不动。具体参数见 §6.1，取值直接对齐 bypass 的默认值（2s 硬下限 / 5s 额外等待 / 3.2MB/s 估算 / 30s→600s 冷却）。
@@ -92,7 +102,7 @@ docs/
 | **R5** | 用户指定根目录，按 collection 名字建新文件夹 | 设置里填根目录；实际落到 `<根目录>\<collection 名>\<uri 文件名>`；不同合集互相隔离 |
 | **R6** | 天然去重（目录）+ IDM 历史 + 扩展下发记录 | 三源都参与判定，重复项默认不勾选并标注来源 |
 | **R7** | 遇到重复任务要用户确认 | 默认跳过；可切换"每次询问"；确认框只有 跳过 / 覆盖下载 / 取消；不生成 `(2)` |
-| **R8** | 规避/应对 N 网人工验证 | 不触发（页面内、串行、抖动）+ 自动暂停 + 定时探针 + 自动恢复；**不做**任何绕过验证的技术 |
+| **R8** | 规避/应对 N 网人工验证 | 不触发（页面内、串行、抖动）+ 自动暂停 + 后台受控验证页 + 真实请求重试 + 自动恢复；**不做**任何绕过验证的技术 |
 
 补充的非功能性要求（建议一并做）：
 
@@ -333,22 +343,36 @@ query CollectionRevision($slug: String!, $revision: Int!, $adult: Boolean, $doma
 - 页面出现 `cf-turnstile` / "Just a moment" 且 `document.title` 变化（页面被整页挑战）；
 - `GenerateDownloadUrl` 返回空且页面 cookie `cf_clearance` 消失（疑似过期）。
 
-### 6.3 自动恢复（"定时刷新"的正确形态）
+### 6.3 自动恢复（v0.3.2 实现）
 
 ```
-检测到挑战
+检测到挑战（GenerateDownloadUrl 返回 challenge）
   → 队列 paused，pauseReason='challenge'，停在这一条上（不跳过、不推进进度）
-  → 横幅：「N 网要求验证。已在下方打开 mod 页面，请在那里完成验证；通过后会自动继续」
-  → 自动打开一个用于验证的标签页（见下）
-  → 定时探针（不是整页刷新）：
-       每 5s 一次，失败则 5→10→20→30s 退避
-       探针 = fetch(location.href, { method: 'HEAD', credentials: 'include' })
-              命中 200 且非挑战页 → 认为会话恢复
-  → 恢复后：等待一个随机 2–5s，从"暂停的那个 mod"继续（不重头）
-  → 连续 3 次挑战 / 30 分钟未恢复 → 停止并提示手动下载剩余项
+  → service worker 用 chrome.tabs.create({active:false}) 打开该 mod 的文件页
+  → 合集页每 0.7–1s 轮询这个标签页：
+       chrome.tabs.get → status / title / url
+       tabs.sendMessage('nd:challengeProbe') → 标题 / #challenge-form / 可见 Turnstile
+       challenge-utils.tabState() 归一化成 clear / challenge / loading / error / gone
+  → 干净：关闭标签页 → 等 1.2–3s 抖动 → 直接重试同一 fileId 的真实请求
+  → 12s 还没过：tabs.update({active:true}) + windows.update({focused:true}) 切到前台，
+       用户点一次勾选框；检测到干净后自动关闭、自动继续
+  → 30 分钟未通过 / 标签页被关闭 / 加载失败 → 停止，横幅保留手动打开链接
 ```
 
-**验证放到新标签页里做**（bypass 同款思路）：挑战时自动 `window.open(<该 mod 的 mod 页>, '_blank')`——注意**不带 `file_id`**，避免我自己的 `nd_auto=1`/点击拦截在那边又触发一次下载。`cf_clearance` 是域级 Cookie（同 profile 的所有标签页共享），在另一个标签页过关后，合集页的请求通常就会一起恢复；合集页继续跑探针，检测到 200 就自动续跑。这样即使 Cloudflare 整页接管了验证标签页，合集页的面板也不会被销毁。设置里可以关掉"自动打开验证页"（`openCheckPage`）。
+关键点：
+
+- **不再用 HEAD 探针**。HEAD 200 不代表 POST 不被挑战；HEAD 403 又没法靠 `fetch` 自己解开
+  （fetch 渲染不了挑战页）。真实请求成功是唯一可靠的恢复信号。
+- **不再用 `window.open`**。它发生在异步队列里，没有用户手势，Chrome 弹窗拦截会吞掉，
+  验证页经常根本没打开。由 service worker 的 `chrome.tabs.create` 打开才稳定；
+  不需要新增 `tabs` 权限，现有 `https://*.nexusmods.com/*` host 权限就能读 `url/title/status`。
+- **不刷新合集页**，面板和队列状态不受影响。
+- **预热**：≥5 个文件且未关闭“开始前预热会话”时，先用同样的后台标签页加载第一个文件页最多 8 秒；
+  干净就关掉开始，没干净也关掉，交给正式挑战流程重新打开（避免留下孤儿标签页）。
+- **设置**：`collectionOpenCheckPage=false` 时退回“只提示、不自动开标签页”；
+  `collectionWarmup=false` 关闭预热。
+- **边界**：这里只让真实浏览器完成 Cloudflare 自己的 managed challenge；
+  不读/不写 `cf_clearance`、不接打码平台、不做指纹伪装。交互式 Turnstile 仍需用户点一次。
 
 **关于整页刷新**：整页刷新会销毁 content script 与面板，所以默认**不刷新**。如果确实需要刷新（页面被 CF 整页接管，脚本已失效），做法是：
 
@@ -356,13 +380,11 @@ query CollectionRevision($slug: String!, $revision: Int!, $adult: Boolean, $doma
 2. 面板在 `sessionStorage` 里打标记 `nd_resume_job`；
 3. 刷新后 content script 检测到标记 + 未完成作业 → 重新渲染面板，显示"已恢复上次进度"，并把"继续"按钮高亮，**不自动开跑**（避免在验证还没过时又触发）。
 
-另外可选的"保活"：长队列每 10 分钟做一次同源轻量请求（`HEAD /games/<game>/collections/<slug>`），既保 `cf_clearance` 热度，也顺便确认登录态；不做高频轮询。
-
 ### 6.4 其他被拦原因的分类（给用户不同提示）
 
 | 现象 | 判定 | 提示 / 动作 |
 |---|---|---|
-| `cf-mitigated` / Just a moment | Cloudflare | 停在该条 + 打开验证页 + 探针 + 自动续跑 |
+| `cf-mitigated` / Just a moment | Cloudflare | 停在该条 + 后台标签页自动过/置前 + 真实请求重试 + 自动续跑 |
 | 登录页 / 401 | 未登录 | 暂停，提示登录 |
 | 429 / "too many requests" | 频率 | 全体共享冷却（30s→600s，最多 6 次），`Retry-After` 优先，冷却结束继续 |
 | 502/503/504、520–524（无挑战标记） | 源站抖动 | 同一文件等 30s→300s 重试，最多 6 次，不当作文件被删 |
@@ -453,7 +475,7 @@ query CollectionRevision($slug: String!, $revision: Int!, $adult: Boolean, $doma
 | P3-5 | 重复项确认对话框（§5.4：跳过 / 覆盖下载 / 取消）+ 行内“重下”（确认后覆盖） | M |
 | P3-6 | 空/异常态：桥接未启动、未登录、合集为空、全部不可下载、revision 被撤回 | S |
 | P3-7 | 与 v0.2 点击拦截共存：面板内点击不被 `handleDownloadClick` 吞掉 | S |
-| P3-8 | 节奏设置：下发间隔秒数（0–600）、最大同时下载（1–5）、小文件优先、重复策略（跳过/每次问）、自动打开验证页 | S |
+| P3-8 | 节奏设置：下发间隔秒数（0–600）、最大同时下载（1–5）、小文件优先、重复策略（跳过/每次问）、验证时自动处理、开始前预热 | S |
 
 ### P4 · 队列引擎（R4/R6/R9/R10）
 
@@ -462,7 +484,7 @@ query CollectionRevision($slug: String!, $revision: Int!, $adult: Boolean, $doma
 | P4-1 | 抽出 `resolveByFileId(fileId, gameId, gameDomain)`（把现有 `resolveDownloadUrl` 里"纯 fileId 换链接"的部分拆成可复用函数，保留原有 DOM 回退路径不变） | M |
 | P4-2 | **节奏引擎**（§6.1）：固定间隔 `gapMs`；按下发未落盘数限制并发；隐藏标签页 ×3；小文件优先 | M |
 | P4-3 | 限速/退避：共享冷却（30s→600s，6 次）、`Retry-After`、等量抖动重试（1.5s→30s）、源站 5xx 等待 30s→300s | M |
-| P4-4 | 会话守卫：挑战检测 → 停在该条 → 打开验证页 → 探针 → 自动恢复（§6.3） | L |
+| P4-4 | 会话守卫：挑战检测 → 停在该条 → 后台标签页 → 自动等待/置前 → 真实请求重试 → 自动恢复（§6.3） | L |
 | P4-5 | 持久化/恢复：作业 + 冷却写 `chrome.storage.local`；页面重开恢复面板；"继续"按钮 | M |
 | P4-6 | 落盘确认：下发后快速轮询 `/check` ≤8s；没落盘记 `sent`，由**每 5s 一次的批量同步**（一次请求查全部 pending）转 `done`；页面重开也先同步；2 小时仍未出现才 `failed`（见 §6.5） | S |
 | P4-7 | 台账写入（§4.3）+ 台账驱动的预检 | S |
@@ -472,7 +494,7 @@ query CollectionRevision($slug: String!, $revision: Int!, $adult: Boolean, $doma
 
 | # | 任务 | 量 |
 |---|---|---|
-| P5-1 | 设置项接入 popup：根目录（只读展示 + 提示在 config.json 改）、节奏滑块、重复策略、验证页开关 | S |
+| P5-1 | 设置项接入 popup：根目录（只读展示 + 提示在 config.json 改）、节奏滑块、重复策略、验证自动处理 / 预热开关 | S |
 | P5-2 | popup 增加"当前合集任务"摘要（可选） | S |
 | P5-3 | README / DEVELOPMENT.md / CHANGELOG 更新；版本 0.2.2 → 0.3.0（manifest + bridge + popup） | S |
 | P5-4 | 全量 `node --check` + 单测 + 手动回归矩阵（§10） | M |
@@ -514,11 +536,19 @@ query CollectionRevision($slug: String!, $revision: Int!, $adult: Boolean, $doma
 | `nd:collectionJobGet/Set` | content → background | 作业持久化 |
 | `nd:ledgerGet/Set` | content → background | 台账读写 |
 | `nd:openCollectionFolder` | content/popup → background | 打开合集目录 |
+| `nd:checkTabOpen` | content → background | `{url, active?}` → `chrome.tabs.create`，返回 `{ok, tabId, tab}` |
+| `nd:checkTabGet` | content → background | `{tabId}` → `{ok, tab:{status,title,url,...}}` |
+| `nd:checkTabNavigate` | content → background | `{tabId, url}` → 重新加载验证页 |
+| `nd:checkTabProbe` | content → background → 验证页 | 触发 `nd:challengeProbe`，返回标题 / 挑战表单 / 可见 Turnstile |
+| `nd:checkTabFocus` | content → background | 把验证页切到前台（`tabs.update` + `windows.update`） |
+| `nd:checkTabClose` | content → background | 关闭验证页 |
+| `nd:challengeProbe` | background → content | 验证页内容脚本返回 `{challenge, turnstile, readyState, title, href}` |
 
 ### 9.3 共享纯函数
 
 - 新增 `extension/lib/collection-utils.js`（UMD，和 `nexus-utils.js` 同风格）；
 - 新增 `extension/lib/queue-pacing.js`：`computeGapMs(opts)`、`normalizeConcurrent(v)`、`retryDelayMs(attempt)`、`parseRetryAfterSeconds()`、`nextCooldown(strike, header)` —— 纯函数，便于单测节奏策略；
+- 新增 `extension/lib/challenge-utils.js`：`tabState({tab, probe, elapsedMs, autoWaitMs})` → `clear|challenge|loading|error|gone` + `escalate`；`shouldWarmUp()`、`pollDelayMs()`。不碰 DOM / chrome.*，由 content、service worker 和单测共用。
 - 桥接 `require('../extension/lib/collection-utils.js')` 复用 `sanitizeSegment()`，**保证扩展预检与桥接实际落盘用同一套清洗规则**（否则"预检说没有、实际写成了另一个名字"）。
 
 ---
@@ -529,13 +559,16 @@ query CollectionRevision($slug: String!, $revision: Int!, $adult: Boolean, $doma
 
 ```powershell
 node tools\test-nexus-utils.js        # 17 项（保持）
-node tools\test-collection-utils.js   # 新增，目标 30+ 项
-node tools\test-idm-history.js        # 新增，解析样本
+node tools\test-collection-utils.js   # 22 项
+node tools\test-queue-pacing.js       # 11 项
+node tools\test-challenge-utils.js    # 10 项：标签页判定 / 预热门槛
+node tools\test-idm-history.js        # 8 项，解析样本
 node tools\test-bridge.js ping
 node tools\print-collection.js monsterhunterworld vmu2j4   # 无需浏览器，打印列表
 node --check extension\collection.js
 node --check extension\background.js
 node --check extension\content.js
+node --check extension\lib\challenge-utils.js
 node --check bridge\server.js
 node --check bridge\idm-history.js
 ```
@@ -558,7 +591,10 @@ node --check bridge\idm-history.js
 | 桥接未启动 | 面板提示先启动桥接，不产生半截状态 |
 | 断网/超时 | 该条失败，可单条重试，不影响其他 |
 | 模拟 429（DevTools 改响应头 `Retry-After: 60`） | 全体进入冷却，面板显示倒计时，冷却结束自动继续 |
-| 模拟挑战（DevTools 改 fetch 返回挑战页） | 停在该条 + 横幅 + 打开验证页 + 探针恢复后自动续跑 |
+| 模拟挑战（DevTools 改 fetch 返回挑战页） | 后台打开验证页；非交互式自动过、自动关、重试同一条；交互式 12s 后切到前台，点一次后自动续跑 |
+| 手动关闭验证页 | 队列停止并提示，不会无限等待 |
+| 关闭“验证时自动处理”后再遇挑战 | 只停在该条并给出手动链接，不自动开标签页 |
+| 关闭“开始前预热” | 批量开始前不额外打开文件页 |
 | 大合集（如 1976 个） | 列表可渲染（虚拟滚动或分页），预检总耗时可控 |
 | 面板内点击 / 拖选 | 不被 v0.2 的 click 拦截吞掉 |
 | Ctrl+点击面板外链接 | 仍按浏览器默认行为 |
@@ -575,7 +611,7 @@ node --check bridge\idm-history.js
 
 | # | 风险 | 概率 | 影响 | 缓解 |
 |---|---|---|---|---|
-| 1 | 批中出现 Cloudflare 挑战 | 中 | 高 | §6.3 停在该条 + 验证页 + 探针 + 续跑；不假装成功 |
+| 1 | 批中出现 Cloudflare 挑战 | 中 | 高 | §6.3 后台验证页 + 12s 后置前 + 真实请求重试 + 续跑；不假装成功 |
 | 2 | **免费账号频率限制**（429 / 广告计时 / 挑战） | **高** | 高 | §6.1 节奏引擎（≥2s、等落盘、5s 额外等待）；共享冷却；逐条重试；面板可调慢 |
 | 3 | 从合集页换直链被拒（必须先访问文件页） | 中 | 高 | P0-1 先验证；退路：隐藏 iframe/新标签页逐 mod 换链接 |
 | 4 | GraphQL v2 是 WIP，字段变更 | 中 | 中 | 查询只取必要字段；`print-collection.js` 回归；三级降级（§3.4） |

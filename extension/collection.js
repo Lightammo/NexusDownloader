@@ -21,7 +21,8 @@
   const C = globalThis.NexusCollection;
   const P = globalThis.NexusQueuePacing;
   const FL = globalThis.NexusFileLink;
-  if (!U || !C || !P || !FL) return;
+  const CU = globalThis.NexusChallenge;
+  if (!U || !C || !P || !FL || !CU) return;
 
   const page = C.parseCollectionPath(location.pathname, location.search);
   if (!page) return;
@@ -29,9 +30,9 @@
   const HOST_ID = '__nexus_collection_panel__';
   const MAX_LOG = 200;
   const PAGE_SIZE = 300;
-  const PROBE_BASE_MS = 5000;
-  const PROBE_MAX_MS = 30000;
-  const CHALLENGE_GIVE_UP_MS = 30 * 60 * 1000;
+  const AUTO_WAIT_MS = CU.DEFAULT_AUTO_WAIT_MS;
+  const MANUAL_WAIT_MS = CU.DEFAULT_MANUAL_WAIT_MS;
+  const MAX_CHALLENGE_RETRIES = CU.MAX_CHALLENGE_RETRIES;
   const RECONCILE_INTERVAL_MS = 5000;
   const RECONCILE_HIDDEN_MS = 30000;
   const SENT_STALE_MS = 2 * 60 * 60 * 1000;
@@ -44,6 +45,7 @@
     collectionUseIdmHistory: true,
     collectionSmallestFirst: true,
     collectionOpenCheckPage: true,
+    collectionWarmup: true,
     collectionFolderSuffix: true
   };
 
@@ -70,6 +72,7 @@
     lastReconcileLogAt: 0,
     cooldownUntil: 0,
     strike: 0,
+    checkTabId: 0,
     bridge: null,
     bridgeOld: false,
     preflightDone: false,
@@ -421,7 +424,8 @@
       '      <label>重复项处理<select data-set="collectionDuplicatePolicy"><option value="skip">直接跳过</option><option value="ask">每次询问</option></select></label>' +
       '      <label class="rowcheck"><input type="checkbox" data-set="collectionUseIdmHistory">IDM 历史算作重复</label>' +
       '      <label class="rowcheck"><input type="checkbox" data-set="collectionSmallestFirst">小文件优先</label>' +
-      '      <label class="rowcheck"><input type="checkbox" data-set="collectionOpenCheckPage">验证时自动打开页面</label>' +
+      '      <label class="rowcheck"><input type="checkbox" data-set="collectionOpenCheckPage">验证时自动处理</label>' +
+      '      <label class="rowcheck"><input type="checkbox" data-set="collectionWarmup">开始前预热会话</label>' +
       '      <label class="rowcheck"><input type="checkbox" data-set="collectionFolderSuffix">目录名包含 slug</label>' +
       '      <button class="wide" data-act="resetjob">重置进度（不删文件）</button>' +
       '    </div>' +
@@ -1307,6 +1311,8 @@
     updateSelectionUi();
     log('开始下载 ' + plan.length + ' 个文件到 ' + (state.dir || subdir));
 
+    await warmUpSession(plan);
+
     const runKeys = plan;
     let index = 0;
     for (const key of runKeys) {
@@ -1325,15 +1331,26 @@
       if (state.abort) break;
 
       let outcome = '';
-      // A challenge stops the queue on this file; once the user passes it we
-      // retry the same file instead of walking past it.
+      let challengeRetries = 0;
+      // A challenge stops the queue on this file; once the verification tab is
+      // clean we retry the same file instead of walking past it. Real requests
+      // are the only proof, so the retry is the probe.
       for (;;) {
         outcome = await processItem(item, {
           index,
           total: runKeys.length,
           onExisting: replaceKeys.has(key) ? 'replace' : 'skip'
         });
-        if (outcome === 'challenge-retry' && !state.abort) continue;
+        if (outcome === 'challenge-retry' && !state.abort && challengeRetries < MAX_CHALLENGE_RETRIES) {
+          challengeRetries += 1;
+          log('第 ' + challengeRetries + ' 次验证后重试同一文件…', 'info');
+          continue;
+        }
+        if (outcome === 'challenge-retry') {
+          st.state = 'failed';
+          st.error = 'Cloudflare 验证反复失败';
+          outcome = 'challenge-stop';
+        }
         break;
       }
       await saveJob();
@@ -1590,9 +1607,16 @@
 
       const code = result.code || 'unknown';
       if (code === 'challenge') {
-        const resumed = await handleChallenge(item, result);
-        resetForRetry(st);
-        return resumed ? 'challenge-retry' : 'challenge-stop';
+        const resumed = await handleChallenge(item);
+        if (resumed) {
+          resetForRetry(st);
+          return 'challenge-retry';
+        }
+        if (state.abort) return 'aborted';
+        st.state = 'failed';
+        st.error = 'Cloudflare 验证未通过';
+        updateRow(item.key);
+        return 'challenge-stop';
       }
       if (code === 'rate_limited') {
         rateLimitWaits += 1;
@@ -1796,65 +1820,204 @@
     }
   }
 
-  async function handleChallenge(item, result) {
+  /**
+   * A challenge cannot be solved from a fetch: the response is a challenge page
+   * and fetch cannot run its JavaScript. So open the file page in a real tab,
+   * watch it, and let the browser do what it normally does. A managed challenge
+   * clears itself in a few seconds; an interactive one stays until the user
+   * ticks the box, so after AUTO_WAIT_MS the tab is brought to the front once.
+   *
+   * The only proof that the session works again is the next real request, so
+   * this returns true and the queue retries the same file instead of trusting a
+   * HEAD probe.
+   */
+  async function handleChallenge(item) {
     state.paused = true;
     state.pauseReason = 'challenge';
     state.strike = 0;
-    setBanner(
-      '需要人机验证。' +
-        (state.settings.collectionOpenCheckPage !== false ? '已打开验证页；' : '打开验证页完成；') +
-        '通过后自动继续。',
-      'bad',
-      item.pageUrl ? { label: '打开验证页面', href: item.pageUrl } : null
-    );
     log('遇到 Cloudflare 验证，停在这一条（' + item.modName + '）。', 'bad');
 
-    if (state.settings.collectionOpenCheckPage !== false && item.pageUrl) {
-      try {
-        window.open(item.pageUrl, '_blank', 'noopener');
-      } catch (_) {
-        /* popup blocked */
-      }
+    if (state.settings.collectionOpenCheckPage === false) {
+      setBanner(
+        '需要人机验证。完成验证后点“重试失败”，再点“下载选中”。',
+        'bad',
+        item.pageUrl ? { label: '打开验证页面', href: item.pageUrl } : null
+      );
+      return false;
     }
 
     const started = Date.now();
-    let wait = PROBE_BASE_MS;
-    while (!state.abort) {
-      if (Date.now() - started > CHALLENGE_GIVE_UP_MS) {
-        setBanner('验证超时，队列已停。通过后点“重试失败”。', 'bad');
-        log('验证超时，队列停止。', 'bad');
-        break;
+    let tabId = 0;
+    let focused = false;
+
+    try {
+      tabId = await ensureCheckTab(item);
+      if (!tabId) {
+        setBanner(
+          '无法自动打开验证页，请手动完成验证后点“重试失败”，再点“下载选中”。',
+          'bad',
+          item.pageUrl ? { label: '打开验证页面', href: item.pageUrl } : null
+        );
+        return false;
       }
-      await sleep(wait);
-      if (state.abort) break;
-      if (await probeSession()) {
-        state.paused = false;
-        state.pauseReason = '';
-        setBanner('验证已通过，继续下载。', 'good');
-        log('验证通过，继续。', 'good');
-        await sleep(1500 + Math.random() * 3000);
-        return true;
+
+      setBanner('N 网要求验证，已在后台打开验证页，正在等待通过…', 'bad');
+
+      while (!state.abort) {
+        const elapsed = Date.now() - started;
+        if (elapsed > MANUAL_WAIT_MS) {
+          setBanner(
+            '验证超时，队列已停。完成验证后点“重试失败”，再点“下载选中”。',
+            'bad',
+            item.pageUrl ? { label: '打开验证页面', href: item.pageUrl } : null
+          );
+          log('验证超时（' + Math.round(elapsed / 1000) + ' 秒），队列停止。', 'bad');
+          return false;
+        }
+
+        const got = await send({ type: 'nd:checkTabGet', tabId });
+        if (!got || !got.ok || !got.tab) {
+          state.checkTabId = 0;
+          setBanner(
+            '验证页已关闭。完成验证后点“重试失败”，再点“下载选中”。',
+            'bad',
+            item.pageUrl ? { label: '重新打开验证页', href: item.pageUrl } : null
+          );
+          log('验证页已关闭，队列停止。', 'bad');
+          return false;
+        }
+
+        const probe = await send({ type: 'nd:checkTabProbe', tabId });
+        const verdict = CU.tabState({
+          tab: got.tab,
+          probe: probe && probe.ok ? probe.probe : null,
+          elapsedMs: elapsed,
+          autoWaitMs: AUTO_WAIT_MS
+        });
+
+        if (verdict.state === 'clear') {
+          await send({ type: 'nd:checkTabClose', tabId });
+          state.checkTabId = 0;
+          state.paused = false;
+          state.pauseReason = '';
+          setBanner('验证已通过，继续下载。', 'good');
+          log('验证已通过（' + Math.round(elapsed / 1000) + ' 秒），继续。', 'good');
+          await sleep(1200 + Math.random() * 1800);
+          return true;
+        }
+
+        if (verdict.state === 'error') {
+          setBanner(
+            '验证页加载失败，请手动打开完成验证，再点“重试失败”。',
+            'bad',
+            item.pageUrl ? { label: '打开验证页面', href: item.pageUrl } : null
+          );
+          log('验证页加载失败。', 'bad');
+          return false;
+        }
+
+        if (verdict.state === 'gone') {
+          state.checkTabId = 0;
+          setBanner('验证页已关闭，队列已停。', 'bad');
+          return false;
+        }
+
+        if (verdict.escalate && !focused) {
+          focused = true;
+          await send({ type: 'nd:checkTabFocus', tabId });
+          setBanner('已切到验证页：如出现“我不是机器人”，点一下即可。通过后会自动继续。', 'bad');
+          log('验证页已切到前台，等待完成…', 'info');
+        } else if (focused) {
+          setBanner('等待验证…（' + Math.round(elapsed / 1000) + ' 秒）', 'bad');
+        } else if (verdict.state === 'loading') {
+          setBanner('正在加载验证页…', 'bad');
+        } else {
+          setBanner('等待验证页自动通过…（' + Math.round(elapsed / 1000) + ' 秒）', 'bad');
+        }
+
+        await sleep(CU.pollDelayMs(verdict.state));
       }
-      wait = Math.min(wait + 5000, PROBE_MAX_MS);
-      setBanner('等待验证…（' + Math.round((Date.now() - started) / 1000) + ' 秒）', 'bad');
+      return false;
+    } finally {
+      if (state.abort && tabId) {
+        await send({ type: 'nd:checkTabClose', tabId });
+        state.checkTabId = 0;
+      }
+      state.paused = false;
+      state.pauseReason = '';
     }
-    state.paused = false;
-    state.pauseReason = '';
-    return false;
   }
 
-  async function probeSession() {
+  /**
+   * Reuse the verification tab if it is still around (a retry after a timeout
+   * should not pile up tabs); navigate it to the file page so it loads again
+   * with a fresh challenge. Otherwise open a background tab.
+   */
+  async function ensureCheckTab(item) {
+    const url = item.pageUrl || FL.filePageUrl(item.fileId, state.meta.gameDomain, item.modId);
+    if (!url) return 0;
+
+    if (state.checkTabId) {
+      const got = await send({ type: 'nd:checkTabGet', tabId: state.checkTabId });
+      if (got && got.ok && got.tab) {
+        const nav = await send({ type: 'nd:checkTabNavigate', tabId: state.checkTabId, url });
+        if (nav && nav.ok) return state.checkTabId;
+      }
+      state.checkTabId = 0;
+    }
+
+    const opened = await send({ type: 'nd:checkTabOpen', url, active: false });
+    if (!opened || !opened.ok) return 0;
+    state.checkTabId = opened.tabId;
+    return opened.tabId;
+  }
+
+  /**
+   * Pre-load the first file page before the queue starts. This is cheap when the
+   * session is already valid and surfaces a stale clearance before file #1.
+   * The tab is always closed here: if it did not clear, the normal challenge
+   * flow will open (and focus) a fresh one.
+   */
+  async function warmUpSession(plan) {
+    if (!plan.length || state.abort) return;
+    if (!CU.shouldWarmUp(plan.length, state.settings.collectionWarmup)) return;
+    if (state.settings.collectionOpenCheckPage === false) return;
+
+    const first = state.byKey.get(plan[0]);
+    if (!first) return;
+
+    setBanner('正在预热会话，检查登录 / 验证状态…', '');
+    log('开始前预热会话…', 'info');
+
+    const tabId = await ensureCheckTab(first);
+    if (!tabId) {
+      setBanner('', '');
+      return;
+    }
+
+    const started = Date.now();
     try {
-      const response = await fetch(location.href, {
-        method: 'HEAD',
-        credentials: 'include',
-        cache: 'no-store'
-      });
-      if (response.status === 403) return false;
-      if (!response.ok) return false;
-      return true;
-    } catch (_) {
-      return false;
+      while (!state.abort && Date.now() - started < 8000) {
+        const got = await send({ type: 'nd:checkTabGet', tabId });
+        if (!got || !got.ok || !got.tab) break;
+        const probe = await send({ type: 'nd:checkTabProbe', tabId });
+        const verdict = CU.tabState({
+          tab: got.tab,
+          probe: probe && probe.ok ? probe.probe : null,
+          elapsedMs: Date.now() - started,
+          autoWaitMs: AUTO_WAIT_MS
+        });
+        if (verdict.state === 'clear') {
+          log('会话正常，开始下载。', 'good');
+          break;
+        }
+        if (verdict.state === 'error' || verdict.state === 'gone') break;
+        await sleep(700);
+      }
+    } finally {
+      await send({ type: 'nd:checkTabClose', tabId });
+      if (state.checkTabId === tabId) state.checkTabId = 0;
+      setBanner('', '');
     }
   }
 
