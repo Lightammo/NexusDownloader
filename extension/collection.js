@@ -24,9 +24,6 @@
   const CU = globalThis.NexusChallenge;
   if (!U || !C || !P || !FL || !CU) return;
 
-  const page = C.parseCollectionPath(location.pathname, location.search);
-  if (!page) return;
-
   const HOST_ID = '__nexus_collection_panel__';
   const MAX_LOG = 200;
   const PAGE_SIZE = 300;
@@ -51,6 +48,10 @@
 
   const state = {
     ready: false,
+    booting: false,
+    challengeBlocked: false,
+    lastBootAttemptAt: 0,
+    currentPageKey: '',
     loading: false,
     mounted: false,
     settings: Object.assign({}, SETTINGS_DEFAULTS),
@@ -671,6 +672,11 @@
       renderLoading();
     }
     try {
+      // Parse at call time, not at script load: Nexus is a client-side app, so
+      // the panel can boot long after this file was injected.
+      const page = C.parseCollectionPath(location.pathname, location.search);
+      if (!page) throw new Error('当前页面不是合集页');
+
       const response = await send({
         type: 'nd:collectionResolve',
         gameDomain: page.gameDomain,
@@ -2027,11 +2033,11 @@
 
   function looksLikeChallengePage() {
     try {
+      // The interstitial title is the cheap, reliable signal. Do not read the
+      // whole document here: the location watcher may ask again a few times.
       const title = document.title || '';
-      if (/just a moment|attention required|请稍候/i.test(title) && !document.querySelector('mod-file-download')) {
-        const html = (document.documentElement && document.documentElement.innerHTML || '').slice(0, 200000);
-        return U.isCloudflareChallenge(html);
-      }
+      if (!/just a moment|attention required|请稍候/i.test(title)) return false;
+      return !document.querySelector('mod-file-download');
     } catch (_) {
       /* ignore */
     }
@@ -2039,47 +2045,119 @@
   }
 
   async function boot() {
-    if (state.ready) return;
-    state.ready = true;
+    if (state.ready || state.booting) return;
 
-    if (looksLikeChallengePage()) {
-      try {
-        sessionStorage.setItem('nd_resume_collection', location.pathname);
-      } catch (_) {
-        /* ignore */
+    const page = C.parseCollectionPath(location.pathname, location.search);
+    if (!page) return;
+
+    state.booting = true;
+    try {
+      if (looksLikeChallengePage()) {
+        try {
+          sessionStorage.setItem('nd_resume_collection', location.pathname);
+        } catch (_) {
+          /* ignore */
+        }
+        // Cloudflare may replace the challenge content in place instead of
+        // reloading the document. Do not give up on this URL: syncLocation will
+        // try again, slowly, until the challenge is gone.
+        state.challengeBlocked = true;
+        return;
       }
+
+      state.challengeBlocked = false;
+      state.ready = true;
+      state.currentPageKey = pageKey(page);
+
+      await loadSettings();
+      buildPanel();
+      state.mounted = true;
+      setPanelPhase('loading');
+      renderLoading();
+      await loadCollection(false).catch((err) => {
+        setPanelPhase('error');
+        if (dom) {
+          dom.sub.textContent = '读取失败';
+          setBanner((err && err.message) || String(err), 'bad');
+        }
+        renderEmpty('无法加载合集。', { action: 'reload', label: '重试', tone: 'bad' });
+      });
+
+      chrome.storage.onChanged.addListener((changes, area) => {
+        if (area !== 'local' || !changes.settings) return;
+        state.settings = Object.assign({}, SETTINGS_DEFAULTS, changes.settings.newValue || {});
+        syncSettingsForm();
+      });
+
+      document.addEventListener('visibilitychange', () => {
+        updateSelectionUi();
+        if (document.visibilityState === 'visible') reconcile().catch(() => {});
+      });
+
+      // Whatever a previous session left as "sent" gets checked against the
+      // folder right away, then keeps being checked until it lands.
+      reconcile().catch(() => {});
+      startReconciler();
+    } finally {
+      state.booting = false;
+    }
+  }
+
+  function pageKey(page) {
+    return page.gameDomain + ':' + page.slug + ':' + (page.revision || 0);
+  }
+
+  function currentPageKey() {
+    const page = C.parseCollectionPath(location.pathname, location.search);
+    return page ? pageKey(page) : '';
+  }
+
+  /**
+   * Nexus is a client-side app: clicking a collection card updates the URL
+   * without reloading the document, so this content script (and its one-time
+   * boot) would otherwise keep running against the previous page. Poll the URL
+   * and boot the panel when a collection page appears.
+   *
+   * Once the panel is bound to one collection, a move to another collection (or
+   * away from collections) reloads the document. That is deliberately boring:
+   * it gives the next page a clean queue, panel and listeners, and it also
+   * covers the "panel left over a mod page" case without a state teardown.
+   */
+  function syncLocation() {
+    const key = currentPageKey();
+
+    if (!key) {
+      if (state.mounted || state.running) reloadOnce();
       return;
     }
 
-    await loadSettings();
-    buildPanel();
-    state.mounted = true;
-    setPanelPhase('loading');
-    renderLoading();
-    await loadCollection(false).catch((err) => {
-      setPanelPhase('error');
-      if (dom) {
-        dom.sub.textContent = '读取失败';
-        setBanner((err && err.message) || String(err), 'bad');
-      }
-      renderEmpty('无法加载合集。', { action: 'reload', label: '重试', tone: 'bad' });
-    });
+    if (state.ready && state.currentPageKey && state.currentPageKey !== key) {
+      reloadOnce();
+      return;
+    }
 
-    chrome.storage.onChanged.addListener((changes, area) => {
-      if (area !== 'local' || !changes.settings) return;
-      state.settings = Object.assign({}, SETTINGS_DEFAULTS, changes.settings.newValue || {});
-      syncSettingsForm();
-    });
+    if (!state.ready && !state.booting) {
+      // A standing challenge page is expensive to inspect, so retry it slowly;
+      // a normal first visit boots immediately.
+      const waitMs = state.challengeBlocked ? 3000 : 1000;
+      if (Date.now() - state.lastBootAttemptAt < waitMs) return;
+      state.lastBootAttemptAt = Date.now();
+      boot().catch(reportBootError);
+    }
+  }
 
-    document.addEventListener('visibilitychange', () => {
-      updateSelectionUi();
-      if (document.visibilityState === 'visible') reconcile().catch(() => {});
-    });
+  let reloading = false;
+  function reloadOnce() {
+    if (reloading) return;
+    reloading = true;
+    location.reload();
+  }
 
-    // Whatever a previous session left as "sent" gets checked against the
-    // folder right away, then keeps being checked until it lands.
-    reconcile().catch(() => {});
-    startReconciler();
+  let locationTimer = 0;
+  function startLocationWatcher() {
+    if (locationTimer) return;
+    locationTimer = setInterval(syncLocation, 500);
+    window.addEventListener('popstate', syncLocation);
   }
 
   function reportBootError(err) {
@@ -2098,8 +2176,9 @@
   }
 
   if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', () => boot().catch(reportBootError), { once: true });
+    document.addEventListener('DOMContentLoaded', syncLocation, { once: true });
   } else {
-    boot().catch(reportBootError);
+    syncLocation();
   }
+  startLocationWatcher();
 })();
